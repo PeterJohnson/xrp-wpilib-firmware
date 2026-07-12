@@ -2,7 +2,7 @@
 ## Introduction
 This repository contains a reference implementation of a [XRP robot](https://www.sparkfun.com/products/22230) that can be controlled via the WPILib XRP extension.
 
-The firmware implements a [custom binary protocol](https://github.com/wpilibsuite/allwpilib/tree/main/simulation/halsim_xrp) over UDP to account for the less performant hardware on the XRP.
+The firmware implements a [custom binary protocol](https://github.com/wpilibsuite/allwpilib/tree/main/simulation/halsim_xrp) over Bluetooth LE L2CAP Credit-Based Mode to account for the less performant hardware on the XRP.
 
 ## Documentation
 Official documentation for the XRP and how to use it with WPILib can be found on the [WPILib Docs site](https://docs.wpilib.org/en/latest/docs/xrp-robot/index.html). The documentation below is also reflected in the official WPILib documentation.
@@ -22,28 +22,22 @@ To install the latest firmware on your XRP, do the following:
 * At this point, you can disconnect the XRP board from your computer and run it off battery power
 
 ### Basic usage
-The firmware provides an endpoint for the WPILib Simulation layer that allows WPILib robot programs to interact with real hardware on the XRP over UDP. 
+The firmware provides a custom Bluetooth packet endpoint for the WPILib Simulation layer that allows WPILib robot programs to interact with real hardware on the XRP.
 
 Upon boot up, the following will happen:
 * The IMU will calibrate itself. This lasts approximately 3-5 seconds, and will be indicated by the green LED rapidly blinking.
-* The network will be configured
-  * By default, a WiFi Access point will be created
-    * The Access Point will have an SSID of the form "XRP-AAAA-BBBB" where "AAAA-BBBB" are hexadecimal digits representing the unique ID of a particular XRP board
-    * The password for the access point is set to "xrp-wpilib" (without the quotes)
-  * If set as such (see the section on XRP Configuration), the XRP will either start a custom-named AP, or connect to an existing network
+* The Bluetooth LE transport will start advertising
+  * The device name will have the form "WPIXRP-AAAA-BBBB" where "AAAA-BBBB" are hexadecimal digits representing the unique ID of a particular XRP board
+  * The packet channel uses LE L2CAP Credit-Based Mode on PSM `0x0081`
 
 For ideal use, the XRP should be placed on a flat surface prior to power up, and if necessary, users can hit the reset button to restart the firmware and IMU calibration process.
 
-If setup as an Access Point, the configured AP name should appear in the list of available WiFi networks. The XRP will be available at the IP address 192.168.42.1.
+The configured Bluetooth name should appear in your operating system's Bluetooth pairing UI. The client should connect to the advertised device and open the LE L2CAP channel on PSM `0x0081`.
 
-If setup in STA mode (i.e. connected to an existing network), the IP address can be determined by either using a tool like Angry IP Scanner, or (more easily), by connecting the XRP to a computer, navigating to the PICODISK removable drive and opening the `xrp-status.txt` file. This file contains information about which network the XRP is connected to, as well as the IP address.
+The Bluetooth name can also be found by connecting the XRP to a computer, navigating to the PICODISK removable drive and opening the `xrp-status.txt` file.
 
-### XRP Configuration
-The XRP provides a simple web-based configuration screen that allows users to adjust the network settings. This screen is available at `http://<IP ADDRESS OF XRP>:5000`. By default, this will be `http://192.168.42.1:5000`.
-
-Users can manually edit the JSON configuration to change the AP name/password, or provide a list of networks to connect to in STA mode. Note that an AP name and password must always be provided as the XRP will fallback to generating an AP if it cannot connect to any listed networks. The `mode` field can be switched between `AP` or `STA` depending on the user's preference.
-
-After saving changes, make sure the restart the XRP.
+### Bluetooth Transport
+Bluetooth LE L2CAP Credit-Based Mode is packet-oriented. Each L2CAP SDU contains exactly one WPILib XRP protocol packet.
 
 #### Note
 As of 10/13/2023, you MUST use the [2024 Beta 1 version](https://github.com/wpilibsuite/allwpilib/releases/tag/v2024.1.1-beta-1) (or later) of WPILib to write XRP programs. There are also examples and templates available (look for "XRP" in the examples/templates dropdown when creating a new project).

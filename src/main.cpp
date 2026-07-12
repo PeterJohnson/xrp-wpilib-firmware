@@ -1,27 +1,19 @@
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <SingleFileDrive.h>
-#include <WebServer.h>
-#include <WiFi.h>
-#include <WiFiUdp.h>
 #include <Wire.h>
 
-#include <vector>
+#include <string>
 
+#include "bluetooth_transport.h"
 #include "byteutils.h"
-#include "config.h"
+#include "encoder.h"
 #include "imu.h"
 #include "robot.h"
-#include "wpilibudp.h" 
-#include "encoder.h"
+#include "wpilibudp.h"
 
 // Resource strings
 extern "C" {
-const unsigned char* GetResource_index_html(size_t* len);
-const unsigned char* GetResource_normalize_css(size_t* len);
-const unsigned char* GetResource_skeleton_css(size_t* len);
-const unsigned char* GetResource_xrp_js(size_t* len);
 const unsigned char* GetResource_VERSION(size_t* len);
 }
 
@@ -32,25 +24,12 @@ const unsigned char* GetResource_VERSION(size_t* len);
   #define MYWIRE Wire1
 #endif
 
-char DEFAULT_SSID[32];
+char DEFAULT_BT_NAME[32];
 
-XRPConfiguration config;
-
-// HTTP server
-WebServer webServer(5000);
-
-// UDP
-WiFiUDP udp;
-char udpPacketBuf[UDP_TX_PACKET_MAX_SIZE + 1];
-IPAddress udpRemoteAddr;
-uint16_t udpRemotePort;
-
-// std::vector<std::string> outboundMessages;
+char transportPacketBuf[bluetooth_transport::kMaxPacketSize];
 
 // TEMP: Status
-unsigned long _wsMessageCount = 0;
 unsigned long _lastMessageStatusPrint = 0;
-int _baselineUsedHeap = 0;
 
 unsigned long _avgLoopTimeUs = 0;
 unsigned long _loopTimeMeasurementCount = 0;
@@ -58,56 +37,24 @@ unsigned long _loopTimeMeasurementCount = 0;
 uint16_t seq = 0;
 
 // Generate the status text file
-void writeStatusToDisk(NetworkMode netMode, char *chipID) {
+void writeStatusToDisk(const char* chipID) {
   File f = LittleFS.open("/status.txt", "w");
 
   size_t len;
-  std::string versionString{reinterpret_cast<const char*>(GetResource_VERSION(&len)), len};
+  std::string versionString{reinterpret_cast<const char*>(GetResource_VERSION(&len)),
+                            len};
   f.printf("Version: %s\n", versionString.c_str());
   f.printf("Chip ID: %s\n", chipID);
-  f.printf("WiFi Mode: %s\n", netMode == NetworkMode::AP ? "AP" : "STA");
-  if (netMode == NetworkMode::AP) {
-    f.printf("AP SSID: %s\n", config.networkConfig.defaultAPName.c_str());
-    f.printf("AP PASS: %s\n", config.networkConfig.defaultAPPassword.c_str());
-    if(config.networkConfig.defaultAPChannel != 0) {
-      f.printf("AP CHAN: %d\n", config.networkConfig.defaultAPChannel);
-    }
-  }
-  else {
-    f.printf("Connected to %s\n", WiFi.SSID().c_str());
-  }
-
-  f.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
+  f.printf("Transport: Bluetooth LE L2CAP Credit-Based Mode\n");
+  f.printf("Bluetooth Name: %s\n", DEFAULT_BT_NAME);
+  f.printf("LE PSM: 0x%04x\n", bluetooth_transport::kLePsm);
+  f.printf("Packet Framing: one L2CAP SDU per WPILib XRP payload\n");
   f.close();
 }
 
 // ==================================================
-// UDP Management Functions
+// Bluetooth Transport Functions
 // ==================================================
-
-// Update the remote UDP socket information (used to send data upstream)
-void updateRemoteInfo() {
-  // Update the remote address if needed
-  if (!udpRemoteAddr.isSet()) {
-    Serial.printf("[NET] Received first UDP connect from %s:%d\n", udp.remoteIP().toString().c_str(), udp.remotePort());
-    udpRemoteAddr = udp.remoteIP();
-    udpRemotePort = udp.remotePort();
-  }
-  else {
-    bool shouldUpdate = false;
-    if (udpRemoteAddr != udp.remoteIP()) {
-      shouldUpdate = true;
-    }
-    if (udpRemotePort != udp.remotePort()) {
-      shouldUpdate = true;
-    }
-
-    if (shouldUpdate) {
-      udpRemoteAddr = udp.remoteIP();
-      udpRemotePort = udp.remotePort();
-    }
-  }
-}
 
 void sendData() {
   int size = 0;
@@ -115,7 +62,7 @@ void sendData() {
   int ptr = 0;
 
   uint16ToNetwork(seq, buffer);
-  buffer[2] = 0; // Unset the control byte
+  buffer[2] = 0;  // Unset the control byte
   ptr = 3;
 
   // Encoders
@@ -127,13 +74,14 @@ void sendData() {
     // positive values when moving forward.
     if (i == 0) {
       encoderValue = -encoderValue;
-      encoderPeriod ^= 1; //Last bit is direction bit; Flip it.
+      encoderPeriod ^= 1;  // Last bit is direction bit; Flip it.
     }
 
     static constexpr uint divisor = xrp::Encoder::getDivisor();
 
-    ptr += wpilibudp::writeEncoderData(i, encoderValue, encoderPeriod, divisor, buffer, ptr);
-  } // 4x 15 bytes
+    ptr += wpilibudp::writeEncoderData(i, encoderValue, encoderPeriod, divisor,
+                                       buffer, ptr);
+  }  // 4x 15 bytes
 
   // DIO (currently just the button)
   ptr += wpilibudp::writeDIOData(0, xrp::isUserButtonPressed(), buffer, ptr);
@@ -141,21 +89,21 @@ void sendData() {
 
   // Gyro and accel data
   float gyroRates[3] = {
-    xrp::imuGetGyroRateX(),
-    xrp::imuGetGyroRateY(),
-    xrp::imuGetGyroRateZ()
+      xrp::imuGetGyroRateX(),
+      xrp::imuGetGyroRateY(),
+      xrp::imuGetGyroRateZ(),
   };
 
   float gyroAngles[3] = {
-    xrp::imuGetRoll(),
-    xrp::imuGetPitch(),
-    xrp::imuGetYaw()
+      xrp::imuGetRoll(),
+      xrp::imuGetPitch(),
+      xrp::imuGetYaw(),
   };
 
   float accels[3] = {
-    xrp::imuGetAccelX(),
-    xrp::imuGetAccelY(),
-    xrp::imuGetAccelZ()
+      xrp::imuGetAccelX(),
+      xrp::imuGetAccelY(),
+      xrp::imuGetAccelZ(),
   };
 
   ptr += wpilibudp::writeGyroData(gyroRates, gyroAngles, buffer, ptr);
@@ -175,78 +123,19 @@ void sendData() {
   // ptr should now point to 1 past the last byte
   size = ptr;
 
-  // Send
-  if (udpRemoteAddr.isSet()) {
-    udp.beginPacket(udpRemoteAddr.toString().c_str(), udpRemotePort);
-    udp.write(buffer, size);
-    udp.endPacket();
+  if (bluetooth_transport::sendPacket(buffer, size)) {
     seq++;
   }
 }
 
-// ==================================================
-// Web Server Management Functions
-// ==================================================
-void setupWebServerRoutes() {
-  webServer.on("/", []() {
-    size_t len;
-    webServer.send(200, "text/html", GetResource_index_html(&len), len);
-  });
-
-  webServer.on("/normalize.css", []() {
-    size_t len;
-    webServer.send(200, "text/css", GetResource_normalize_css(&len), len);
-  });
-
-  webServer.on("/skeleton.css", []() {
-    size_t len;
-    webServer.send(200, "text/css", GetResource_skeleton_css(&len), len);
-  });
-
-  webServer.on("/xrp.js", []() {
-    size_t len;
-    webServer.send(200, "text/javascript", GetResource_xrp_js(&len), len);
-  });
-
-  webServer.on("/getconfig", []() {
-    File f = LittleFS.open("/config.json", "r");
-    if (webServer.streamFile(f, "text/json") != f.size()) {
-      Serial.println("[WEB] Sent less data than expected for /getconfig");
-    }
-    f.close();
-  });
-
-  webServer.on("/resetconfig", []() {
-    if (webServer.method() != HTTP_POST) {
-      webServer.send(405, "text/plain", "Method Not Allowed");
-      return;
-    }
-    File f = LittleFS.open("/config.json", "w");
-    f.print(generateDefaultConfig(DEFAULT_SSID).toJsonString().c_str());
-    f.close();
-    webServer.send(200, "text/plain", "OK");
-  });
-
-  webServer.on("/saveconfig", []() {
-    if (webServer.method() != HTTP_POST) {
-      webServer.send(405, "text/plain", "Method Not Allowed");
-      return;
-    }
-    auto postBody = webServer.arg("plain");
-    File f = LittleFS.open("/config.json", "w");
-    f.print(postBody);
-    f.close();
-    Serial.println("[CONFIG] Configuration Updated Remotely");
-
-    webServer.send(200, "text/plain", "OK");
-  });
-}
-
 void checkPrintStatus() {
   if (millis() - _lastMessageStatusPrint > 5000) {
-
     int usedHeap = rp2040.getUsedHeap();
-    Serial.printf("t(ms):%u h:%d msg:%u lt(us):%u\n", millis(), usedHeap, _wsMessageCount, _avgLoopTimeUs);
+    Serial.printf("t(ms):%u h:%d bt:%d lt(us):%u\n",
+                  millis(),
+                  usedHeap,
+                  bluetooth_transport::connected() ? 1 : 0,
+                  _avgLoopTimeUs);
     _lastMessageStatusPrint = millis();
   }
 }
@@ -259,37 +148,10 @@ void updateLoopTime(unsigned long loopStart) {
   _avgLoopTimeUs = (totalTime + loopTime) / _loopTimeMeasurementCount;
 }
 
-NetworkMode setupNetwork(XRPConfiguration configuration) {
+void setupBluetoothTransport() {
+  bluetooth_transport::begin(DEFAULT_BT_NAME);
 
-  // Busy-loop if there's no WiFi hardware
-  if (WiFi.status() == WL_NO_MODULE) {
-    Serial.println("[NET] No WiFi Module");
-    while (true);
-  }
-
-  // Set up WiFi AP
-  WiFi.setHostname(DEFAULT_SSID);
-
-  // Use configuration information
-  NetworkMode netConfigResult = configureNetwork(configuration);
-  Serial.printf("[NET] Actual WiFi Mode: %s\n", netConfigResult == NetworkMode::AP ? "AP" : "STA");
-
-  // Set up HTTP server routes
-  Serial.println("[NET] Setting up Config webserver");
-  setupWebServerRoutes();
-
-  webServer.begin();
-  Serial.println("[NET] Config webserver listening on *:5000");
-
-  // Set up UDP
-  udp.begin(3540);
-  Serial.println("[NET] UDP socket listening on *:3540");
-
-  Serial.println("[NET] Network Ready");
-  Serial.printf("[NET] SSID: %s\n", WiFi.SSID().c_str());
-  Serial.printf("[NET] IP: %s\n", WiFi.localIP().toString().c_str());
-
-  return netConfigResult;
+  Serial.println("[BT] Bluetooth transport ready");
 }
 
 void setup() {
@@ -304,20 +166,18 @@ void setup() {
   MYWIRE.setSDA(I2C_SDA_1);
   MYWIRE.begin();
 
-  // Give a few seconds if attaching a Serail port listener
+  // Give a few seconds if attaching a Serial port listener
   delay(2000);
 
-  // Generate the default SSID using the flash ID
+  // Generate the default Bluetooth name using the flash ID
   pico_unique_board_id_t id_out;
   pico_get_unique_board_id(&id_out);
   char chipID[20];
-  sprintf(chipID, "%02x%02x-%02x%02x", id_out.id[4], id_out.id[5], id_out.id[6], id_out.id[7]);
-  sprintf(DEFAULT_SSID, "XRP-%s", chipID);
+  snprintf(chipID, sizeof(chipID), "%02x%02x-%02x%02x", id_out.id[4],
+           id_out.id[5], id_out.id[6], id_out.id[7]);
+  snprintf(DEFAULT_BT_NAME, sizeof(DEFAULT_BT_NAME), "WPIXRP-%s", chipID);
 
-  // Read Config
-  config = loadConfiguration(DEFAULT_SSID);
-
-  // MUST BE BEFORE imuCalibrate (has digitalWrites) and configureNetwork
+  // MUST BE BEFORE imuCalibrate (has digitalWrites) and Bluetooth startup
   xrp::robotInit();
 
   // Initialize IMU
@@ -327,11 +187,11 @@ void setup() {
   Serial.println("[IMU] Beginning IMU calibration");
   xrp::imuCalibrate(5000);
 
-  // Setup Network
-  NetworkMode netMode = setupNetwork(config);
+  // Setup Bluetooth transport
+  setupBluetoothTransport();
 
   // Write current status file
-  writeStatusToDisk(netMode,chipID);
+  writeStatusToDisk(chipID);
 
   // NOTE: For now, we'll force init the reflectance sensor
   // TODO Enable this via configuration
@@ -342,9 +202,7 @@ void setup() {
   xrp::rangefinderInit();
 
   _lastMessageStatusPrint = millis();
-  _baselineUsedHeap = rp2040.getUsedHeap();
-
-  // Emulates a FAT-formatted USB stick 
+  // Emulates a FAT-formatted USB stick
   // to allow txt file to be read if USB connected
   singleFileDrive.begin("status.txt", "XRP-Status.txt");
 }
@@ -352,24 +210,18 @@ void setup() {
 void loop() {
   unsigned long loopStartTime = micros();
 
-  // Check for (configuration) requests from webServer
-  webServer.handleClient();
-
-  // Check for data via udp (from client code)
-  int packetSize = udp.parsePacket();
-  if (packetSize) {
-    updateRemoteInfo();
-
-    // Read the packet
-    int n = udp.read(udpPacketBuf, UDP_TX_PACKET_MAX_SIZE);
-    wpilibudp::processPacket(udpPacketBuf, n);
+  // Check for data from the Bluetooth transport.
+  size_t packetSize = 0;
+  while (bluetooth_transport::readPacket(
+      transportPacketBuf, sizeof(transportPacketBuf), &packetSize)) {
+    wpilibudp::processPacket(transportPacketBuf, static_cast<int>(packetSize));
   }
 
   xrp::imuPeriodic();
   xrp::rangefinderPollForData();
 
-  // Disable the robot when the UDP watchdog timesout
-  // Also reset the max sequence number so we can handle reconnects
+  // Disable the robot when the driver station watchdog times out.
+  // Also reset the max sequence number so we can handle reconnects.
   if (!wpilibudp::dsWatchdogActive()) {
     wpilibudp::resetState();
     xrp::robotSetEnabled(false);
@@ -377,7 +229,7 @@ void loop() {
   }
 
   if (xrp::robotPeriodic()) {
-    // Package up and send all the data to client udp
+    // Package up and send all the data to the Bluetooth client.
     sendData();
   }
 
