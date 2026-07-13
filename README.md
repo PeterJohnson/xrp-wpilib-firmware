@@ -2,7 +2,7 @@
 ## Introduction
 This repository contains a reference implementation of a [XRP robot](https://www.sparkfun.com/products/22230) that can be controlled via the WPILib XRP extension.
 
-The firmware implements a [custom binary protocol](https://github.com/wpilibsuite/allwpilib/tree/main/simulation/halsim_xrp) over Bluetooth LE L2CAP Credit-Based Mode to account for the less performant hardware on the XRP.
+The firmware implements a [custom binary protocol](https://github.com/wpilibsuite/allwpilib/tree/main/simulation/halsim_xrp) over Bluetooth LE. It advertises both a custom GATT service and an LE L2CAP Credit-Based Mode channel so clients can use the best packet transport available on each operating system.
 
 ## Documentation
 Official documentation for the XRP and how to use it with WPILib can be found on the [WPILib Docs site](https://docs.wpilib.org/en/latest/docs/xrp-robot/index.html). The documentation below is also reflected in the official WPILib documentation.
@@ -28,16 +28,29 @@ Upon boot up, the following will happen:
 * The IMU will calibrate itself. This lasts approximately 3-5 seconds, and will be indicated by the green LED rapidly blinking.
 * The Bluetooth LE transport will start advertising
   * The device name will have the form "WPIXRP-AAAA-BBBB" where "AAAA-BBBB" are hexadecimal digits representing the unique ID of a particular XRP board
-  * The packet channel uses LE L2CAP Credit-Based Mode on PSM `0x0081`
+  * The primary advertisement includes the WPILib XRP GATT service UUID `7d2ea28a-f7bd-485d-9d6a-2c3f0b214a3f`
+  * The scan response includes the full Bluetooth device name
+  * The optional high-performance packet channel uses LE L2CAP Credit-Based Mode on PSM `0x0081`
 
 For ideal use, the XRP should be placed on a flat surface prior to power up, and if necessary, users can hit the reset button to restart the firmware and IMU calibration process.
 
-The configured Bluetooth name should appear in your operating system's Bluetooth pairing UI. The client should connect to the advertised device and open the LE L2CAP channel on PSM `0x0081`.
+The configured Bluetooth name should appear in your operating system's Bluetooth pairing UI. Windows clients should use the custom GATT service. Linux and macOS clients may use either GATT or the LE L2CAP channel on PSM `0x0081`.
 
 The Bluetooth name can also be found by connecting the XRP to a computer, navigating to the PICODISK removable drive and opening the `xrp-status.txt` file.
 
 ### Bluetooth Transport
-Bluetooth LE L2CAP Credit-Based Mode is packet-oriented. Each L2CAP SDU contains exactly one WPILib XRP protocol packet.
+The firmware exposes two packet transports:
+
+* GATT service UUID: `7d2ea28a-f7bd-485d-9d6a-2c3f0b214a3f`
+  * Control characteristic UUID: `7d2ea28b-f7bd-485d-9d6a-2c3f0b214a3f`
+  * Control property: `WRITE_WITHOUT_RESPONSE`
+  * Status characteristic UUID: `7d2ea28c-f7bd-485d-9d6a-2c3f0b214a3f`
+  * Status property: `NOTIFY`
+* LE L2CAP Credit-Based Mode PSM: `0x0081`
+
+Each GATT write value, GATT notification value, or L2CAP SDU contains exactly one WPILib XRP protocol packet. There is no additional length prefix inside the Bluetooth payload.
+
+The firmware advertises preferred connection parameters of 7.5 ms minimum interval, 15 ms maximum interval, and latency 0. The central device ultimately decides the actual connection parameters. GATT clients should negotiate an ATT MTU large enough for the largest WPILib XRP packet they expect to receive; the firmware does not fragment packets across multiple notifications.
 
 #### Note
 As of 10/13/2023, you MUST use the [2024 Beta 1 version](https://github.com/wpilibsuite/allwpilib/releases/tag/v2024.1.1-beta-1) (or later) of WPILib to write XRP programs. There are also examples and templates available (look for "XRP" in the examples/templates dropdown when creating a new project).

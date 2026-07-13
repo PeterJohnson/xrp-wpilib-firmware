@@ -45,10 +45,16 @@ void writeStatusToDisk(const char* chipID) {
                             len};
   f.printf("Version: %s\n", versionString.c_str());
   f.printf("Chip ID: %s\n", chipID);
-  f.printf("Transport: Bluetooth LE L2CAP Credit-Based Mode\n");
+  f.printf("Transport: Bluetooth LE GATT + L2CAP Credit-Based Mode\n");
   f.printf("Bluetooth Name: %s\n", DEFAULT_BT_NAME);
+  f.printf("GATT Service UUID: %s\n", bluetooth_transport::kGattServiceUuid);
+  f.printf("GATT Control Characteristic UUID: %s\n",
+           bluetooth_transport::kGattControlCharacteristicUuid);
+  f.printf("GATT Status Characteristic UUID: %s\n",
+           bluetooth_transport::kGattStatusCharacteristicUuid);
   f.printf("LE PSM: 0x%04x\n", bluetooth_transport::kLePsm);
-  f.printf("Packet Framing: one L2CAP SDU per WPILib XRP payload\n");
+  f.printf("Preferred Connection Interval: 7.5-15 ms, latency 0\n");
+  f.printf("Packet Framing: one BLE packet per WPILib XRP payload\n");
   f.close();
 }
 
