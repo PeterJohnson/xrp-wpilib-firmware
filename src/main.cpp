@@ -4,9 +4,11 @@
 #include <Wire.h>
 
 #include <string>
+#include <string.h>
 
 #include "bluetooth_transport.h"
 #include "byteutils.h"
+#include "config.h"
 #include "encoder.h"
 #include "imu.h"
 #include "robot.h"
@@ -24,7 +26,7 @@ const unsigned char* GetResource_VERSION(size_t* len);
   #define MYWIRE Wire1
 #endif
 
-char DEFAULT_BT_NAME[32];
+char BLUETOOTH_DEVICE_NAME[32];
 
 char transportPacketBuf[bluetooth_transport::kMaxPacketSize];
 
@@ -45,8 +47,9 @@ void writeStatusToDisk(const char* chipID) {
                             len};
   f.printf("Version: %s\n", versionString.c_str());
   f.printf("Chip ID: %s\n", chipID);
+  f.printf("Config Version: %d\n", XRP_CONFIG_VERSION);
   f.printf("Transport: Bluetooth LE GATT + L2CAP Credit-Based Mode\n");
-  f.printf("Bluetooth Name: %s\n", DEFAULT_BT_NAME);
+  f.printf("Bluetooth Name: %s\n", BLUETOOTH_DEVICE_NAME);
   f.printf("GATT Service UUID: %s\n", bluetooth_transport::kGattServiceUuid);
   f.printf("GATT Control Characteristic UUID: %s\n",
            bluetooth_transport::kGattControlCharacteristicUuid);
@@ -155,7 +158,7 @@ void updateLoopTime(unsigned long loopStart) {
 }
 
 void setupBluetoothTransport() {
-  bluetooth_transport::begin(DEFAULT_BT_NAME);
+  bluetooth_transport::begin(BLUETOOTH_DEVICE_NAME);
 
   Serial.println("[BT] Bluetooth transport ready");
 }
@@ -181,7 +184,14 @@ void setup() {
   char chipID[20];
   snprintf(chipID, sizeof(chipID), "%02x%02x-%02x%02x", id_out.id[4],
            id_out.id[5], id_out.id[6], id_out.id[7]);
-  snprintf(DEFAULT_BT_NAME, sizeof(DEFAULT_BT_NAME), "WPIXRP-%s", chipID);
+  char defaultBluetoothName[32];
+  snprintf(defaultBluetoothName, sizeof(defaultBluetoothName), "WPIXRP-%s",
+           chipID);
+
+  XRPConfiguration config = loadConfiguration(defaultBluetoothName);
+  strncpy(BLUETOOTH_DEVICE_NAME, config.bluetoothConfig.deviceName.c_str(),
+          sizeof(BLUETOOTH_DEVICE_NAME) - 1);
+  BLUETOOTH_DEVICE_NAME[sizeof(BLUETOOTH_DEVICE_NAME) - 1] = '\0';
 
   // MUST BE BEFORE imuCalibrate (has digitalWrites) and Bluetooth startup
   xrp::robotInit();

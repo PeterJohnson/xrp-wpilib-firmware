@@ -27,7 +27,8 @@ The firmware provides a custom Bluetooth packet endpoint for the WPILib Simulati
 Upon boot up, the following will happen:
 * The IMU will calibrate itself. This lasts approximately 3-5 seconds, and will be indicated by the green LED rapidly blinking.
 * The Bluetooth LE transport will start advertising
-  * The device name will have the form "WPIXRP-AAAA-BBBB" where "AAAA-BBBB" are hexadecimal digits representing the unique ID of a particular XRP board
+  * By default, the device name will have the form "WPIXRP-AAAA-BBBB" where "AAAA-BBBB" are hexadecimal digits representing the unique ID of a particular XRP board
+  * The device name can be customized with the Bluetooth configuration in `/config.json`
   * The primary advertisement includes the WPILib XRP GATT service UUID `7d2ea28a-f7bd-485d-9d6a-2c3f0b214a3f`
   * The scan response includes the full Bluetooth device name
   * The optional high-performance packet channel uses LE L2CAP Credit-Based Mode on PSM `0x0081`
@@ -37,6 +38,22 @@ For ideal use, the XRP should be placed on a flat surface prior to power up, and
 The configured Bluetooth name should appear in your operating system's Bluetooth pairing UI. Windows clients should use the custom GATT service. Linux and macOS clients may use either GATT or the LE L2CAP channel on PSM `0x0081`.
 
 The Bluetooth name can also be found by connecting the XRP to a computer, navigating to the PICODISK removable drive and opening the `xrp-status.txt` file.
+
+### XRP Configuration
+The firmware stores its persistent configuration in `/config.json` on LittleFS. If the file is missing, invalid, or uses an older schema version, the firmware rewrites it with the default Bluetooth configuration on boot.
+
+The current configuration schema is version `2`:
+
+```json
+{
+    "configVersion": 2,
+    "bluetooth": {
+        "deviceName": "WPIXRP-AAAA-BBBB"
+    }
+}
+```
+
+`bluetooth.deviceName` controls the advertised Bluetooth name. It must be 1-29 printable ASCII characters. The generated `WPIXRP-AAAA-BBBB` name is used as the default and fallback value. Restart the XRP after changing this value.
 
 ### Bluetooth Transport
 The firmware exposes two packet transports:

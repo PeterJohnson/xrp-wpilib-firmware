@@ -28,14 +28,20 @@ window.onload = () => {
             // Check if can parse
             let jsonObj = JSON.parse(configJsonEntry.value);
             
-            // Check if Defaul AP exists and has password 8 characters or more
-            if(jsonObj["network"] && jsonObj["network"]["defaultAP"] && jsonObj["network"]["defaultAP"]["password"]) {
-                let password = jsonObj["network"]["defaultAP"]["password"];
-                if(password.length < 8 || password.length > 63) {
-                    throw new Error("Default AP password must be at least 8 characters and less than 64 per WPA standards");
+            if(!jsonObj["bluetooth"] || typeof jsonObj["bluetooth"]["deviceName"] !== "string") {
+                throw new Error("In \"bluetooth\", must have field \"deviceName\": \"WPIXRP-name\"");
+            }
+
+            let deviceName = jsonObj["bluetooth"]["deviceName"];
+            if(deviceName.length < 1 || deviceName.length > 29) {
+                throw new Error("Bluetooth device name must be between 1 and 29 characters");
+            }
+
+            for(let i = 0; i < deviceName.length; i++) {
+                let code = deviceName.charCodeAt(i);
+                if(code < 0x20 || code > 0x7e) {
+                    throw new Error("Bluetooth device name must use printable ASCII characters");
                 }
-            } else {
-                throw new Error("In \"network\", must have field \"defaultAP\": {\"ssid\":\"APname\", \"password\":\"mypassword\"}");
             }
 
             // Don't allow for escape characters
