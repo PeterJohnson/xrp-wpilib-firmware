@@ -178,18 +178,20 @@ void setup() {
   // Give a few seconds if attaching a Serial port listener
   delay(2000);
 
-  // Generate the default Bluetooth name using the flash ID
+  // Generate the default Bluetooth name suffix using the flash ID
   pico_unique_board_id_t id_out;
   pico_get_unique_board_id(&id_out);
   char chipID[20];
   snprintf(chipID, sizeof(chipID), "%02x%02x-%02x%02x", id_out.id[4],
            id_out.id[5], id_out.id[6], id_out.id[7]);
-  char defaultBluetoothName[32];
-  snprintf(defaultBluetoothName, sizeof(defaultBluetoothName), "WPIXRP-%s",
+  char defaultBluetoothNameSuffix[20];
+  snprintf(defaultBluetoothNameSuffix, sizeof(defaultBluetoothNameSuffix), "%s",
            chipID);
 
-  XRPConfiguration config = loadConfiguration(defaultBluetoothName);
-  strncpy(BLUETOOTH_DEVICE_NAME, config.bluetoothConfig.deviceName.c_str(),
+  XRPConfiguration config = loadConfiguration(defaultBluetoothNameSuffix);
+  std::string bluetoothDeviceName =
+      buildBluetoothDeviceName(config.bluetoothConfig.deviceNameSuffix);
+  strncpy(BLUETOOTH_DEVICE_NAME, bluetoothDeviceName.c_str(),
           sizeof(BLUETOOTH_DEVICE_NAME) - 1);
   BLUETOOTH_DEVICE_NAME[sizeof(BLUETOOTH_DEVICE_NAME) - 1] = '\0';
 

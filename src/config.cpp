@@ -14,20 +14,35 @@ void writeConfigToDisk(const XRPConfiguration& config) {
   f.close();
 }
 
-XRPConfiguration resetToDefaultConfig(const std::string& defaultBluetoothName) {
-  XRPConfiguration config = generateDefaultConfig(defaultBluetoothName);
+XRPConfiguration resetToDefaultConfig(
+    const std::string& defaultBluetoothNameSuffix) {
+  XRPConfiguration config = generateDefaultConfig(defaultBluetoothNameSuffix);
   writeConfigToDisk(config);
   return config;
 }
 
 }  // namespace
 
-bool isValidBluetoothDeviceName(const std::string& deviceName) {
-  if (deviceName.empty() || deviceName.length() > XRP_BLUETOOTH_NAME_MAX_LENGTH) {
+std::string buildBluetoothDeviceName(const std::string& deviceNameSuffix) {
+  return std::string(XRP_BLUETOOTH_NAME_PREFIX) + deviceNameSuffix;
+}
+
+std::string normalizeBluetoothDeviceNameSuffix(
+    const std::string& deviceNameOrSuffix) {
+  if (deviceNameOrSuffix.rfind(XRP_BLUETOOTH_NAME_PREFIX, 0) == 0) {
+    return deviceNameOrSuffix.substr(XRP_BLUETOOTH_NAME_PREFIX_LENGTH);
+  }
+
+  return deviceNameOrSuffix;
+}
+
+bool isValidBluetoothDeviceNameSuffix(const std::string& deviceNameSuffix) {
+  if (deviceNameSuffix.empty() ||
+      deviceNameSuffix.length() > XRP_BLUETOOTH_NAME_SUFFIX_MAX_LENGTH) {
     return false;
   }
 
-  for (char c : deviceName) {
+  for (char c : deviceNameSuffix) {
     if (c < 0x20 || c > 0x7e) {
       return false;
     }
@@ -36,9 +51,10 @@ bool isValidBluetoothDeviceName(const std::string& deviceName) {
   return true;
 }
 
-XRPConfiguration generateDefaultConfig(const std::string& defaultBluetoothName) {
+XRPConfiguration generateDefaultConfig(
+    const std::string& defaultBluetoothNameSuffix) {
   XRPConfiguration defaultConfig;
-  defaultConfig.bluetoothConfig.deviceName = defaultBluetoothName;
+  defaultConfig.bluetoothConfig.deviceNameSuffix = defaultBluetoothNameSuffix;
   return defaultConfig;
 }
 
@@ -48,18 +64,20 @@ std::string XRPConfiguration::toJsonString() const {
   config["configVersion"] = XRP_CONFIG_VERSION;
 
   JsonObject bluetooth = config["bluetooth"].to<JsonObject>();
-  bluetooth["deviceName"] = bluetoothConfig.deviceName;
+  bluetooth["deviceName"] = buildBluetoothDeviceName(
+      bluetoothConfig.deviceNameSuffix);
 
   std::string ret;
   serializeJsonPretty(config, ret);
   return ret;
 }
 
-XRPConfiguration loadConfiguration(const std::string& defaultBluetoothName) {
+XRPConfiguration loadConfiguration(
+    const std::string& defaultBluetoothNameSuffix) {
   File f = LittleFS.open(kConfigPath, "r");
   if (!f) {
     Serial.println("[CONFIG] No config file found. Creating default");
-    return resetToDefaultConfig(defaultBluetoothName);
+    return resetToDefaultConfig(defaultBluetoothNameSuffix);
   }
 
   JsonDocument configJson;
@@ -70,28 +88,34 @@ XRPConfiguration loadConfiguration(const std::string& defaultBluetoothName) {
     Serial.print("[CONFIG] Deserialization failed: ");
     Serial.println(jsonErr.f_str());
     Serial.println("[CONFIG] Using default");
-    return resetToDefaultConfig(defaultBluetoothName);
+    return resetToDefaultConfig(defaultBluetoothNameSuffix);
   }
 
   if (configJson["configVersion"] != XRP_CONFIG_VERSION) {
     Serial.println("[CONFIG] Configuration version mismatch. Using default");
-    return resetToDefaultConfig(defaultBluetoothName);
+    return resetToDefaultConfig(defaultBluetoothNameSuffix);
   }
 
   if (!configJson["bluetooth"].is<JsonObject>()) {
     Serial.println("[CONFIG] No Bluetooth information specified. Using default");
-    return resetToDefaultConfig(defaultBluetoothName);
+    return resetToDefaultConfig(defaultBluetoothNameSuffix);
   }
 
-  XRPConfiguration config = generateDefaultConfig(defaultBluetoothName);
+  XRPConfiguration config = generateDefaultConfig(defaultBluetoothNameSuffix);
   bool shouldWrite = false;
 
   JsonObject bluetoothInfo = configJson["bluetooth"].as<JsonObject>();
   if (bluetoothInfo["deviceName"].is<const char*>()) {
-    std::string configuredDeviceName =
+    std::string configuredDeviceNameOrSuffix =
         bluetoothInfo["deviceName"].as<std::string>();
-    if (isValidBluetoothDeviceName(configuredDeviceName)) {
-      config.bluetoothConfig.deviceName = configuredDeviceName;
+    std::string configuredDeviceNameSuffix =
+        normalizeBluetoothDeviceNameSuffix(configuredDeviceNameOrSuffix);
+    if (isValidBluetoothDeviceNameSuffix(configuredDeviceNameSuffix)) {
+      config.bluetoothConfig.deviceNameSuffix = configuredDeviceNameSuffix;
+      if (buildBluetoothDeviceName(configuredDeviceNameSuffix) !=
+          configuredDeviceNameOrSuffix) {
+        shouldWrite = true;
+      }
     } else {
       Serial.println("[CONFIG] Invalid Bluetooth device name. Using default");
       shouldWrite = true;

@@ -28,7 +28,7 @@ Upon boot up, the following will happen:
 * The IMU will calibrate itself. This lasts approximately 3-5 seconds, and will be indicated by the green LED rapidly blinking.
 * The Bluetooth LE transport will start advertising
   * By default, the device name will have the form "WPIXRP-AAAA-BBBB" where "AAAA-BBBB" are hexadecimal digits representing the unique ID of a particular XRP board
-  * The device name can be customized with the Bluetooth configuration in `/config.json`
+  * The device name can be customized with the Bluetooth configuration in `/config.json`; the firmware always advertises names with the `WPIXRP-` prefix
   * The primary advertisement includes the WPILib XRP GATT service UUID `7d2ea28a-f7bd-485d-9d6a-2c3f0b214a3f`
   * The scan response includes the full Bluetooth device name
   * The optional high-performance packet channel uses LE L2CAP Credit-Based Mode on PSM `0x0081`
@@ -53,7 +53,7 @@ The current configuration schema is version `2`:
 }
 ```
 
-`bluetooth.deviceName` controls the advertised Bluetooth name. It must be 1-29 printable ASCII characters. The generated `WPIXRP-AAAA-BBBB` name is used as the default and fallback value. Restart the XRP after changing this value.
+`bluetooth.deviceName` controls the advertised Bluetooth name. It may be either the full `WPIXRP-AAAA-BBBB` name or the `AAAA-BBBB` suffix; the firmware always enforces the `WPIXRP-` prefix. The suffix after `WPIXRP-` must be 1-22 printable ASCII characters. The generated `WPIXRP-AAAA-BBBB` name is used as the default and fallback value. Restart the XRP after changing this value.
 
 ### Bluetooth Transport
 The firmware exposes two packet transports:

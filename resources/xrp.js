@@ -32,17 +32,24 @@ window.onload = () => {
                 throw new Error("In \"bluetooth\", must have field \"deviceName\": \"WPIXRP-name\"");
             }
 
-            let deviceName = jsonObj["bluetooth"]["deviceName"];
-            if(deviceName.length < 1 || deviceName.length > 29) {
-                throw new Error("Bluetooth device name must be between 1 and 29 characters");
+            let deviceNameSuffix = jsonObj["bluetooth"]["deviceName"];
+            if(deviceNameSuffix.startsWith("WPIXRP-")) {
+                deviceNameSuffix = deviceNameSuffix.substring("WPIXRP-".length);
             }
 
-            for(let i = 0; i < deviceName.length; i++) {
-                let code = deviceName.charCodeAt(i);
+            if(deviceNameSuffix.length < 1 || deviceNameSuffix.length > 22) {
+                throw new Error("Bluetooth device name suffix must be between 1 and 22 characters");
+            }
+
+            for(let i = 0; i < deviceNameSuffix.length; i++) {
+                let code = deviceNameSuffix.charCodeAt(i);
                 if(code < 0x20 || code > 0x7e) {
-                    throw new Error("Bluetooth device name must use printable ASCII characters");
+                    throw new Error("Bluetooth device name suffix must use printable ASCII characters");
                 }
             }
+
+            jsonObj["bluetooth"]["deviceName"] = "WPIXRP-" + deviceNameSuffix;
+            configJsonEntry.value = JSON.stringify(jsonObj, null, 4);
 
             // Don't allow for escape characters
             if(configJsonEntry.value.toString().includes("\\")) {
