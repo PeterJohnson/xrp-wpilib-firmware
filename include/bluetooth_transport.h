@@ -1,8 +1,64 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 namespace bluetooth_transport {
+
+struct AdvertisementDiagnostics {
+  uint8_t advertisingData[31]{};
+  uint8_t advertisingDataLength = 0;
+  bool advertisingDataOverflow = false;
+  uint8_t scanResponseData[31]{};
+  uint8_t scanResponseDataLength = 0;
+  bool scanResponseDataOverflow = false;
+  bool appliedAfterHciWorking = false;
+};
+
+struct ConnectionDiagnostics {
+  bool leConnected = false;
+  bool l2capConnected = false;
+  bool gattConnected = false;
+  bool gattNotificationsEnabled = false;
+  bool txPending = false;
+  bool txCanSendRequested = false;
+  bool rxOverflow = false;
+  uint8_t rxQueueDepth = 0;
+  uint8_t rxQueueUsed = 0;
+  uint8_t rxQueueMaxUsed = 0;
+  uint8_t activeTransport = 0;
+  uint8_t txTransport = 0;
+  uint16_t leConnectionHandle = 0xffff;
+  uint16_t l2capChannelId = 0;
+  uint16_t l2capRemoteMtu = 0;
+  uint16_t gattConnectionHandle = 0xffff;
+  uint16_t gattPayloadMtu = 0;
+  uint16_t gattControlValueHandle = 0;
+  uint16_t gattStatusValueHandle = 0;
+  uint16_t gattStatusCccHandle = 0;
+  uint16_t lastGattStatusPacketSize = 0;
+  uint32_t rxPacketsQueued = 0;
+  uint32_t rxPacketsDropped = 0;
+  uint32_t l2capStatusPacketsQueued = 0;
+  uint32_t l2capCanSendRequests = 0;
+  uint32_t l2capCanSendCallbacks = 0;
+  uint32_t l2capImmediateSends = 0;
+  uint32_t l2capPacketsSent = 0;
+  uint32_t l2capSendDrops = 0;
+  uint8_t lastL2capSendResult = 0;
+  uint32_t gattControlPacketsReceived = 0;
+  uint32_t gattCccdWrites = 0;
+  uint32_t gattStatusPacketsQueued = 0;
+  uint32_t gattStatusPacketsBlockedNotifications = 0;
+  uint32_t gattStatusPacketsBlockedMtu = 0;
+  uint32_t gattNotificationRequests = 0;
+  uint32_t gattNotificationCallbacks = 0;
+  uint32_t gattNotificationImmediateSends = 0;
+  uint32_t gattNotificationsSent = 0;
+  uint32_t gattNotificationDrops = 0;
+  uint8_t lastGattNotifyRequestResult = 0;
+  uint8_t lastGattNotifyResult = 0;
+};
 
 constexpr size_t kMaxPacketSize = 512;
 constexpr unsigned kLePsm = 0x0081;
@@ -16,7 +72,12 @@ constexpr unsigned kPreferredConnectionIntervalMax = 12;  // 15 ms
 constexpr unsigned kPreferredSlaveLatency = 0;
 
 void begin(const char* deviceName);
+const AdvertisementDiagnostics& advertisementDiagnostics();
+const ConnectionDiagnostics& connectionDiagnostics();
 bool connected();
+unsigned hciState();
+const char* hciStateName();
+void localAddress(char* buffer, size_t bufferSize);
 bool readPacket(char* buffer, size_t bufferSize, size_t* packetSize);
 bool sendPacket(const char* buffer, size_t packetSize);
 

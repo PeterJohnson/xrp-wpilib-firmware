@@ -29,15 +29,15 @@ Upon boot up, the following will happen:
 * The Bluetooth LE transport will start advertising
   * By default, the device name will have the form "WPIXRP-AAAA-BBBB" where "AAAA-BBBB" are hexadecimal digits representing the unique ID of a particular XRP board
   * The device name can be customized with the Bluetooth configuration in `/config.json`; the firmware always advertises names with the `WPIXRP-` prefix
-  * The primary advertisement includes the WPILib XRP GATT service UUID `7d2ea28a-f7bd-485d-9d6a-2c3f0b214a3f`
-  * The scan response includes the full Bluetooth device name
+  * The primary advertisement includes the complete Bluetooth device name
+  * The scan response includes the WPILib XRP GATT service UUID `7d2ea28a-f7bd-485d-9d6a-2c3f0b214a3f`
   * The optional high-performance packet channel uses LE L2CAP Credit-Based Mode on PSM `0x0081`
 
 For ideal use, the XRP should be placed on a flat surface prior to power up, and if necessary, users can hit the reset button to restart the firmware and IMU calibration process.
 
 The configured Bluetooth name should appear in your operating system's Bluetooth pairing UI. Windows clients should use the custom GATT service. Linux and macOS clients may use either GATT or the LE L2CAP channel on PSM `0x0081`.
 
-The Bluetooth name can also be found by connecting the XRP to a computer, navigating to the PICODISK removable drive and opening the `xrp-status.txt` file.
+The Bluetooth name can also be found by connecting the XRP to a computer, navigating to the PICODISK removable drive and opening the `XRP-Status.txt` file. This file also includes Bluetooth diagnostics such as the BTstack HCI state, local Bluetooth address, advertising data, scan response data, and decoded advertisement fields.
 
 ### XRP Configuration
 The firmware stores its persistent configuration in `/config.json` on LittleFS. If the file is missing, invalid, or uses an older schema version, the firmware rewrites it with the default Bluetooth configuration on boot.
@@ -53,7 +53,7 @@ The current configuration schema is version `2`:
 }
 ```
 
-`bluetooth.deviceName` controls the advertised Bluetooth name. It may be either the full `WPIXRP-AAAA-BBBB` name or the `AAAA-BBBB` suffix; the firmware always enforces the `WPIXRP-` prefix. The suffix after `WPIXRP-` must be 1-22 printable ASCII characters. The generated `WPIXRP-AAAA-BBBB` name is used as the default and fallback value. Restart the XRP after changing this value.
+`bluetooth.deviceName` controls the advertised Bluetooth name. It may be either the full `WPIXRP-AAAA-BBBB` name or the `AAAA-BBBB` suffix; the firmware always enforces the `WPIXRP-` prefix. The suffix after `WPIXRP-` must be 1-19 printable ASCII characters. The generated `WPIXRP-AAAA-BBBB` name is used as the default and fallback value. Restart the XRP after changing this value.
 
 ### Bluetooth Transport
 The firmware exposes two packet transports:
@@ -66,6 +66,8 @@ The firmware exposes two packet transports:
 * LE L2CAP Credit-Based Mode PSM: `0x0081`
 
 Each GATT write value, GATT notification value, or L2CAP SDU contains exactly one WPILib XRP protocol packet. There is no additional length prefix inside the Bluetooth payload.
+
+Each protocol packet starts with a 2-byte big-endian sequence number, a 1-byte control field, and a series of `[size][tag][payload]` chunks. Status packets include a timing chunk with tag `0x19`, size `7`, payload `[lastControlSeq:u16][controlRxAgeUs:u32]`. `lastControlSeq` echoes the most recent accepted control packet sequence number, and `controlRxAgeUs` is the number of microseconds between receiving that control packet and producing the status packet. Clients can use this echo with their local control-packet send timestamps to estimate application-level round-trip latency.
 
 The firmware advertises preferred connection parameters of 7.5 ms minimum interval, 15 ms maximum interval, and latency 0. The central device ultimately decides the actual connection parameters. GATT clients should negotiate an ATT MTU large enough for the largest WPILib XRP packet they expect to receive; the firmware does not fragment packets across multiple notifications.
 

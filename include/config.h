@@ -8,7 +8,7 @@
 #define XRP_CONFIG_VERSION 2
 
 constexpr const char XRP_BLUETOOTH_NAME_PREFIX[] = "WPIXRP-";
-constexpr size_t XRP_BLUETOOTH_NAME_MAX_LENGTH = 29;
+constexpr size_t XRP_BLUETOOTH_NAME_MAX_LENGTH = 26;
 constexpr size_t XRP_BLUETOOTH_NAME_PREFIX_LENGTH =
     sizeof(XRP_BLUETOOTH_NAME_PREFIX) - 1;
 constexpr size_t XRP_BLUETOOTH_NAME_SUFFIX_MAX_LENGTH =

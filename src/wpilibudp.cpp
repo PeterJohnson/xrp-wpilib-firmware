@@ -1,3 +1,5 @@
+#include <Arduino.h>
+
 #include "byteutils.h"
 #include "wpilibudp.h"
 #include "robot.h"
@@ -12,6 +14,8 @@
 namespace wpilibudp {
 
 uint16_t currMaxSeq = 0;
+uint32_t lastControlPacketMicros = 0;
+bool receivedControlPacket = false;
 xrp::Watchdog _dsWatchdog{"status"};
 
 bool _processTaggedData(char* buffer, int start, int end) {
@@ -71,6 +75,8 @@ bool dsWatchdogActive() {
 
 void resetState() {
   currMaxSeq = 0;
+  lastControlPacketMicros = 0;
+  receivedControlPacket = false;
 }
 
 bool processPacket(char* buffer, int size) {
@@ -102,6 +108,8 @@ bool processPacket(char* buffer, int size) {
       return false;
     }
   }
+  lastControlPacketMicros = micros();
+  receivedControlPacket = true;
 
   // Control byte essentially encodes the enabled/disabled state
   xrp::robotSetEnabled(ctrl == 1);
@@ -202,6 +210,20 @@ int writeAnalogData(int deviceId, float voltage, char* buffer, int offset) {
   floatToNetwork(voltage, buffer, offset+3);
 
   return 7; // +1 for size byte
+}
+
+int writeTimingData(char* buffer, int offset) {
+  // Timing message is 7 bytes
+  // tag(1) lastControlSeq(2) controlRxAgeUs(4)
+  buffer[offset] = 7;
+  buffer[offset+1] = XRP_TAG_TIMING;
+  uint16ToNetwork(currMaxSeq, buffer, offset+2);
+  uint32_t ageUs =
+      receivedControlPacket ? static_cast<uint32_t>(micros() - lastControlPacketMicros)
+                            : UINT32_MAX;
+  uint32ToNetwork(ageUs, buffer, offset+4);
+
+  return 8; // +1 for size byte
 }
 
 } // namespace wpilibudp
