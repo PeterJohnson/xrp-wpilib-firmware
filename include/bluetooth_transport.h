@@ -34,6 +34,8 @@ struct ConnectionDiagnostics {
   uint16_t connectionSupervisionTimeout = 0;
   uint16_t l2capChannelId = 0;
   uint16_t l2capRemoteMtu = 0;
+  uint16_t l2capPeerCredits = 0;
+  bool l2capCanSendNow = false;
   uint16_t gattConnectionHandle = 0xffff;
   uint16_t gattPayloadMtu = 0;
   uint16_t gattControlValueHandle = 0;

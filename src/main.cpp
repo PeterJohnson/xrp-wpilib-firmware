@@ -252,10 +252,13 @@ void writeStatusToDisk(const char* chipID, const char* diagnosticsSnapshot) {
            connectionDiagnostics.connectionSupervisionTimeout,
            static_cast<unsigned long>(connectionDiagnostics.connectionUpdates),
            connectionDiagnostics.lastDisconnectReason);
-  f.printf("L2CAP Connected: %s cid=0x%04x remote_mtu=%u\n",
+  f.printf("L2CAP Connected: %s cid=0x%04x remote_mtu=%u peer_credits=%u "
+           "can_send_now=%s\n",
            connectionDiagnostics.l2capConnected ? "yes" : "no",
            connectionDiagnostics.l2capChannelId,
-           connectionDiagnostics.l2capRemoteMtu);
+           connectionDiagnostics.l2capRemoteMtu,
+           connectionDiagnostics.l2capPeerCredits,
+           connectionDiagnostics.l2capCanSendNow ? "yes" : "no");
   f.printf("L2CAP Packet Counters: status_queued=%lu requests=%lu "
            "callbacks=%lu immediate=%lu sent=%lu drops=%lu last=0x%02x\n",
            static_cast<unsigned long>(

@@ -535,6 +535,33 @@ bool isForeignGattHandle(hci_con_handle_t handle) {
          handle != gattConnectionHandle;
 }
 
+void handleLeConnected(hci_con_handle_t handle, uint16_t interval,
+                       uint16_t latency, uint16_t supervisionTimeout,
+                       const char* eventName) {
+  if (isForeignLeHandle(handle)) {
+    ++connectionInfo.rejectedLeConnections;
+    Serial.printf("[BT] Rejecting extra LE connection handle=0x%04x "
+                  "active=0x%04x\n",
+                  handle, leConnectionHandle);
+    disconnectHandle(handle, "busy");
+    return;
+  }
+
+  if (handle == leConnectionHandle) {
+    recordConnectionParameters(interval, latency, supervisionTimeout);
+    Serial.printf("[BT] Duplicate LE connected event handle=0x%04x (%s)\n",
+                  handle, eventName);
+    return;
+  }
+
+  leConnectionHandle = handle;
+  recordConnectionParameters(interval, latency, supervisionTimeout);
+  clearL2capConnection();
+  clearGattConnection();
+  clearRxQueue();
+  Serial.printf("[BT] LE connected handle=0x%04x (%s)\n", handle, eventName);
+}
+
 uint16_t handleGattRead(uint16_t characteristicId, uint8_t* buffer,
                         uint16_t bufferSize) {
   if (characteristicId != gattStatusCccHandle) {
@@ -644,35 +671,48 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
             case HCI_SUBEVENT_LE_CONNECTION_COMPLETE:
               if (hci_subevent_le_connection_complete_get_status(packet) ==
                   ERROR_CODE_SUCCESS) {
-                hci_con_handle_t handle =
+                handleLeConnected(
                     hci_subevent_le_connection_complete_get_connection_handle(
-                        packet);
-                if (isForeignLeHandle(handle)) {
-                  ++connectionInfo.rejectedLeConnections;
-                  Serial.printf("[BT] Rejecting extra LE connection handle=0x%04x "
-                                "active=0x%04x\n",
-                                handle, leConnectionHandle);
-                  disconnectHandle(handle, "busy");
-                  break;
-                }
-                if (handle == leConnectionHandle) {
-                  Serial.printf("[BT] Duplicate LE connected event handle=0x%04x\n",
-                                handle);
-                  break;
-                }
-
-                leConnectionHandle = handle;
-                recordConnectionParameters(
+                        packet),
                     hci_subevent_le_connection_complete_get_conn_interval(
                         packet),
                     hci_subevent_le_connection_complete_get_conn_latency(
                         packet),
                     hci_subevent_le_connection_complete_get_supervision_timeout(
-                        packet));
-                clearL2capConnection();
-                clearGattConnection();
-                clearRxQueue();
-                Serial.printf("[BT] LE connected handle=0x%04x\n", handle);
+                        packet),
+                    "LE connection complete");
+              }
+              break;
+
+            case HCI_SUBEVENT_LE_ENHANCED_CONNECTION_COMPLETE_V1:
+              if (hci_subevent_le_enhanced_connection_complete_v1_get_status(
+                      packet) == ERROR_CODE_SUCCESS) {
+                handleLeConnected(
+                    hci_subevent_le_enhanced_connection_complete_v1_get_connection_handle(
+                        packet),
+                    hci_subevent_le_enhanced_connection_complete_v1_get_conn_interval(
+                        packet),
+                    hci_subevent_le_enhanced_connection_complete_v1_get_conn_latency(
+                        packet),
+                    hci_subevent_le_enhanced_connection_complete_v1_get_supervision_timeout(
+                        packet),
+                    "LE enhanced connection complete v1");
+              }
+              break;
+
+            case HCI_SUBEVENT_LE_ENHANCED_CONNECTION_COMPLETE_V2:
+              if (hci_subevent_le_enhanced_connection_complete_v2_get_status(
+                      packet) == ERROR_CODE_SUCCESS) {
+                handleLeConnected(
+                    hci_subevent_le_enhanced_connection_complete_v2_get_connection_handle(
+                        packet),
+                    hci_subevent_le_enhanced_connection_complete_v2_get_conn_interval(
+                        packet),
+                    hci_subevent_le_enhanced_connection_complete_v2_get_conn_latency(
+                        packet),
+                    hci_subevent_le_enhanced_connection_complete_v2_get_supervision_timeout(
+                        packet),
+                    "LE enhanced connection complete v2");
               }
               break;
 
@@ -919,6 +959,10 @@ const ConnectionDiagnostics& connectionDiagnostics() {
   connectionInfo.leConnectionHandle = leConnectionHandle;
   connectionInfo.l2capChannelId = l2capChannelId;
   connectionInfo.l2capRemoteMtu = l2capRemoteMtu;
+  connectionInfo.l2capPeerCredits =
+      l2capChannelId != 0 ? l2cap_cbm_available_credits(l2capChannelId) : 0;
+  connectionInfo.l2capCanSendNow =
+      l2capChannelId != 0 && l2cap_can_send_packet_now(l2capChannelId);
   connectionInfo.gattConnectionHandle = effectiveGattHandle;
   connectionInfo.gattPayloadMtu = currentGattPayloadMtu();
   connectionInfo.gattControlValueHandle = gattControlValueHandle;
