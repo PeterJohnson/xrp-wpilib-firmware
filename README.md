@@ -28,7 +28,7 @@ Upon boot up, the following will happen:
 * The IMU will calibrate itself. This lasts approximately 3-5 seconds, and will be indicated by the green LED rapidly blinking.
 * The Bluetooth LE transport will start advertising
   * By default, the device name will have the form "WPIXRP-AAAA-BBBB" where "AAAA-BBBB" are hexadecimal digits representing the unique ID of a particular XRP board
-  * The device name can be customized with the Bluetooth configuration in `/config.json`; the firmware always advertises names with the `WPIXRP-` prefix
+  * The device name can be customized with the Bluetooth configuration in `/config.ini`; the firmware always advertises names with the `WPIXRP-` prefix
   * The primary advertisement includes the complete Bluetooth device name
   * The scan response includes the WPILib XRP GATT service UUID `7d2ea28a-f7bd-485d-9d6a-2c3f0b214a3f`
   * The optional high-performance packet channel uses LE L2CAP Credit-Based Mode on PSM `0x0081`
@@ -40,20 +40,34 @@ The configured Bluetooth name should appear in your operating system's Bluetooth
 The Bluetooth name can also be found by connecting the XRP to a computer, navigating to the PICODISK removable drive and opening the `XRP-Status.txt` file. This file also includes Bluetooth diagnostics such as the BTstack HCI state, local Bluetooth address, advertising data, scan response data, and decoded advertisement fields.
 
 ### XRP Configuration
-The firmware stores its persistent configuration in `/config.json` on LittleFS. If the file is missing, invalid, or uses an older schema version, the firmware rewrites it with the default Bluetooth configuration on boot.
+The firmware stores its persistent configuration in `/config.ini` on LittleFS. It is a plain text INI file so it can be edited by hand in a text editor. If the file is missing, invalid, or uses an older schema version, the firmware rewrites it with the default Bluetooth configuration template on boot.
 
-The current configuration schema is version `2`:
+The current configuration schema is version `3`:
 
-```json
-{
-    "configVersion": 2,
-    "bluetooth": {
-        "deviceName": "WPIXRP-AAAA-BBBB"
-    }
-}
+```ini
+# XRP firmware configuration
+# Edit this file with a plain text editor, then restart the XRP.
+# Lines starting with # or ; are comments.
+# Inline comments are allowed after whitespace.
+
+config_version = 3
+
+[bluetooth]
+# The firmware always advertises Bluetooth names with the WPIXRP- prefix.
+# Use either a full WPIXRP- name or just the suffix after WPIXRP-.
+# Suffix length: 1-19 printable ASCII characters.
+# Default: WPIXRP-AAAA-BBBB
+# device_name = WPIXRP-AAAA-BBBB
 ```
 
-`bluetooth.deviceName` controls the advertised Bluetooth name. It may be either the full `WPIXRP-AAAA-BBBB` name or the `AAAA-BBBB` suffix; the firmware always enforces the `WPIXRP-` prefix. The suffix after `WPIXRP-` must be 1-19 printable ASCII characters. The generated `WPIXRP-AAAA-BBBB` name is used as the default and fallback value. Restart the XRP after changing this value.
+`device_name` in the `[bluetooth]` section controls the advertised Bluetooth name. Leave it commented out to use the generated default. To customize the name, uncomment the setting and change the value:
+
+```ini
+[bluetooth]
+device_name = My-XRP
+```
+
+The value may be either the full `WPIXRP-AAAA-BBBB` name or the `AAAA-BBBB` suffix; the firmware always enforces the `WPIXRP-` prefix. The suffix after `WPIXRP-` must be 1-19 printable ASCII characters. The generated `WPIXRP-AAAA-BBBB` name is used as the default and fallback value. Restart the XRP after changing this value.
 
 ### Bluetooth Transport
 The firmware exposes two packet transports:

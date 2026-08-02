@@ -218,6 +218,7 @@ void writeStatusToDisk(const char* chipID, const char* diagnosticsSnapshot) {
   }
   f.print("\n");
   f.printf("Config Version: %d\n", XRP_CONFIG_VERSION);
+  f.printf("Config File: %s\n", XRP_CONFIG_PATH);
   f.printf("Transport: Bluetooth LE GATT + L2CAP Credit-Based Mode\n");
   f.printf("Bluetooth Name: %s\n", BLUETOOTH_DEVICE_NAME);
   f.printf("GATT Service UUID: %s\n", bluetooth_transport::GATT_SERVICE_UUID);

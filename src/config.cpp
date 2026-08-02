@@ -1,24 +1,222 @@
 #include "config.h"
 
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include <LittleFS.h>
 
 namespace {
 
-constexpr const char* CONFIG_PATH = "/config.json";
+constexpr const char* CONFIG_VERSION_KEY = "config_version";
+constexpr const char* CONFIG_VERSION_CAMEL_CASE_KEY = "configversion";
+constexpr const char* BLUETOOTH_SECTION = "bluetooth";
+constexpr const char* BLUETOOTH_DEVICE_NAME_KEY = "device_name";
+constexpr const char* BLUETOOTH_DEVICE_NAME_CAMEL_CASE_KEY = "devicename";
 
-void writeConfigToDisk(const XRPConfiguration& config) {
-  File f = LittleFS.open(CONFIG_PATH, "w");
-  f.print(config.toJsonString().c_str());
+bool isAsciiWhitespace(char c) {
+  return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' ||
+         c == '\v';
+}
+
+std::string trimAsciiWhitespace(const std::string& value) {
+  size_t start = 0;
+  while (start < value.size() && isAsciiWhitespace(value[start])) {
+    start++;
+  }
+
+  size_t end = value.size();
+  while (end > start && isAsciiWhitespace(value[end - 1])) {
+    end--;
+  }
+
+  return value.substr(start, end - start);
+}
+
+std::string toLowerAscii(std::string value) {
+  for (char& c : value) {
+    if (c >= 'A' && c <= 'Z') {
+      c = static_cast<char>(c - 'A' + 'a');
+    }
+  }
+
+  return value;
+}
+
+std::string stripInlineComment(const std::string& line) {
+  bool inSingleQuote = false;
+  bool inDoubleQuote = false;
+
+  for (size_t i = 0; i < line.size(); i++) {
+    char c = line[i];
+    if (c == '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+    } else if (c == '\'' && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+    } else if (!inSingleQuote && !inDoubleQuote && (c == '#' || c == ';') &&
+               (i == 0 || isAsciiWhitespace(line[i - 1]))) {
+      return line.substr(0, i);
+    }
+  }
+
+  return line;
+}
+
+bool unquoteIniValue(std::string* value, std::string* error,
+                     unsigned int lineNumber) {
+  if (value->empty()) {
+    return true;
+  }
+
+  char quote = value->front();
+  if (quote != '"' && quote != '\'') {
+    return true;
+  }
+
+  if (value->size() < 2 || value->back() != quote) {
+    *error = "line " + std::to_string(lineNumber) + ": unterminated quote";
+    return false;
+  }
+
+  *value = value->substr(1, value->size() - 2);
+  return true;
+}
+
+bool parseUnsignedInteger(const std::string& value, int* parsed) {
+  if (value.empty()) {
+    return false;
+  }
+
+  int result = 0;
+  for (char c : value) {
+    if (c < '0' || c > '9') {
+      return false;
+    }
+    result = result * 10 + (c - '0');
+  }
+
+  *parsed = result;
+  return true;
+}
+
+std::string readFileToString(File& f) {
+  std::string contents;
+  while (f.available()) {
+    contents.push_back(static_cast<char>(f.read()));
+  }
+
+  return contents;
+}
+
+void writeConfigToDisk(const XRPConfiguration& config,
+                       const std::string& defaultBluetoothNameSuffix) {
+  File f = LittleFS.open(XRP_CONFIG_PATH, "w");
+  if (!f) {
+    Serial.println("[CONFIG] Failed to open config file for writing");
+    return;
+  }
+
+  f.print(config.toIniString(defaultBluetoothNameSuffix).c_str());
   f.close();
 }
 
 XRPConfiguration resetToDefaultConfig(
     const std::string& defaultBluetoothNameSuffix) {
   XRPConfiguration config = generateDefaultConfig(defaultBluetoothNameSuffix);
-  writeConfigToDisk(config);
+  writeConfigToDisk(config, defaultBluetoothNameSuffix);
   return config;
+}
+
+bool parseConfigIni(const std::string& contents,
+                    const std::string& defaultBluetoothNameSuffix,
+                    XRPConfiguration* config, bool* shouldWrite,
+                    std::string* error) {
+  *config = generateDefaultConfig(defaultBluetoothNameSuffix);
+  *shouldWrite = false;
+
+  bool foundConfigVersion = false;
+  int parsedConfigVersion = 0;
+  std::string currentSection;
+  size_t lineStart = 0;
+  unsigned int lineNumber = 1;
+
+  while (lineStart <= contents.size()) {
+    size_t lineEnd = contents.find('\n', lineStart);
+    if (lineEnd == std::string::npos) {
+      lineEnd = contents.size();
+    }
+
+    std::string line = contents.substr(lineStart, lineEnd - lineStart);
+    line = trimAsciiWhitespace(stripInlineComment(line));
+
+    if (!line.empty()) {
+      if (line.front() == '[') {
+        if (line.back() != ']') {
+          *error = "line " + std::to_string(lineNumber) +
+                   ": malformed section header";
+          return false;
+        }
+
+        currentSection =
+            toLowerAscii(trimAsciiWhitespace(line.substr(1, line.size() - 2)));
+      } else {
+        size_t separator = line.find('=');
+        if (separator == std::string::npos) {
+          *error =
+              "line " + std::to_string(lineNumber) + ": expected key = value";
+          return false;
+        }
+
+        std::string key =
+            toLowerAscii(trimAsciiWhitespace(line.substr(0, separator)));
+        std::string value = trimAsciiWhitespace(line.substr(separator + 1));
+        if (!unquoteIniValue(&value, error, lineNumber)) {
+          return false;
+        }
+
+        if (currentSection.empty() &&
+            (key == CONFIG_VERSION_KEY ||
+             key == CONFIG_VERSION_CAMEL_CASE_KEY)) {
+          foundConfigVersion = true;
+          if (!parseUnsignedInteger(value, &parsedConfigVersion)) {
+            *error = "line " + std::to_string(lineNumber) +
+                     ": config_version must be an integer";
+            return false;
+          }
+        } else if (currentSection == BLUETOOTH_SECTION &&
+                   (key == BLUETOOTH_DEVICE_NAME_KEY ||
+                    key == BLUETOOTH_DEVICE_NAME_CAMEL_CASE_KEY)) {
+          std::string configuredDeviceNameSuffix =
+              normalizeBluetoothDeviceNameSuffix(value);
+          if (isValidBluetoothDeviceNameSuffix(configuredDeviceNameSuffix)) {
+            config->bluetoothConfig.deviceNameSuffix =
+                configuredDeviceNameSuffix;
+          } else {
+            Serial.println(
+                "[CONFIG] Invalid Bluetooth device name. Using default");
+            config->bluetoothConfig.deviceNameSuffix =
+                defaultBluetoothNameSuffix;
+            *shouldWrite = true;
+          }
+        }
+      }
+    }
+
+    if (lineEnd == contents.size()) {
+      break;
+    }
+    lineStart = lineEnd + 1;
+    lineNumber++;
+  }
+
+  if (!foundConfigVersion) {
+    *error = "missing config_version";
+    return false;
+  }
+
+  if (parsedConfigVersion != XRP_CONFIG_VERSION) {
+    *error = "configuration version mismatch";
+    return false;
+  }
+
+  return true;
 }
 
 }  // namespace
@@ -58,75 +256,65 @@ XRPConfiguration generateDefaultConfig(
   return defaultConfig;
 }
 
-std::string XRPConfiguration::toJsonString() const {
-  JsonDocument config;
-
-  config["configVersion"] = XRP_CONFIG_VERSION;
-
-  JsonObject bluetooth = config["bluetooth"].to<JsonObject>();
-  bluetooth["deviceName"] = buildBluetoothDeviceName(
-      bluetoothConfig.deviceNameSuffix);
-
+std::string XRPConfiguration::toIniString(
+    const std::string& defaultBluetoothNameSuffix) const {
+  std::string defaultBluetoothDeviceName =
+      buildBluetoothDeviceName(defaultBluetoothNameSuffix);
+  std::string bluetoothDeviceName =
+      buildBluetoothDeviceName(bluetoothConfig.deviceNameSuffix);
   std::string ret;
-  serializeJsonPretty(config, ret);
+  ret += "# XRP firmware configuration\n";
+  ret += "# Edit this file with a plain text editor, then restart the XRP.\n";
+  ret += "# Lines starting with # or ; are comments.\n";
+  ret += "# Inline comments are allowed after whitespace.\n";
+  ret += "\n";
+  ret += "config_version = " + std::to_string(XRP_CONFIG_VERSION) + "\n";
+  ret += "\n";
+  ret += "[bluetooth]\n";
+  ret += "# The firmware always advertises Bluetooth names with the ";
+  ret += XRP_BLUETOOTH_NAME_PREFIX;
+  ret += " prefix.\n";
+  ret += "# Use either a full WPIXRP- name or just the suffix after WPIXRP-.\n";
+  ret += "# Suffix length: 1-";
+  ret += std::to_string(XRP_BLUETOOTH_NAME_SUFFIX_MAX_LENGTH);
+  ret += " printable ASCII characters.\n";
+  ret += "# Default: ";
+  ret += defaultBluetoothDeviceName;
+  ret += "\n";
+  if (bluetoothDeviceName == defaultBluetoothDeviceName) {
+    ret += "# device_name = ";
+  } else {
+    ret += "device_name = ";
+  }
+  ret += bluetoothDeviceName;
+  ret += "\n";
   return ret;
 }
 
 XRPConfiguration loadConfiguration(
     const std::string& defaultBluetoothNameSuffix) {
-  File f = LittleFS.open(CONFIG_PATH, "r");
+  File f = LittleFS.open(XRP_CONFIG_PATH, "r");
   if (!f) {
     Serial.println("[CONFIG] No config file found. Creating default");
     return resetToDefaultConfig(defaultBluetoothNameSuffix);
   }
 
-  JsonDocument configJson;
-  auto jsonErr = deserializeJson(configJson, f);
+  std::string contents = readFileToString(f);
   f.close();
 
-  if (jsonErr) {
-    Serial.print("[CONFIG] Deserialization failed: ");
-    Serial.println(jsonErr.f_str());
+  XRPConfiguration config;
+  bool shouldWrite = false;
+  std::string error;
+  if (!parseConfigIni(contents, defaultBluetoothNameSuffix, &config,
+                      &shouldWrite, &error)) {
+    Serial.print("[CONFIG] Invalid config file: ");
+    Serial.println(error.c_str());
     Serial.println("[CONFIG] Using default");
     return resetToDefaultConfig(defaultBluetoothNameSuffix);
   }
 
-  if (configJson["configVersion"] != XRP_CONFIG_VERSION) {
-    Serial.println("[CONFIG] Configuration version mismatch. Using default");
-    return resetToDefaultConfig(defaultBluetoothNameSuffix);
-  }
-
-  if (!configJson["bluetooth"].is<JsonObject>()) {
-    Serial.println("[CONFIG] No Bluetooth information specified. Using default");
-    return resetToDefaultConfig(defaultBluetoothNameSuffix);
-  }
-
-  XRPConfiguration config = generateDefaultConfig(defaultBluetoothNameSuffix);
-  bool shouldWrite = false;
-
-  JsonObject bluetoothInfo = configJson["bluetooth"].as<JsonObject>();
-  if (bluetoothInfo["deviceName"].is<const char*>()) {
-    std::string configuredDeviceNameOrSuffix =
-        bluetoothInfo["deviceName"].as<std::string>();
-    std::string configuredDeviceNameSuffix =
-        normalizeBluetoothDeviceNameSuffix(configuredDeviceNameOrSuffix);
-    if (isValidBluetoothDeviceNameSuffix(configuredDeviceNameSuffix)) {
-      config.bluetoothConfig.deviceNameSuffix = configuredDeviceNameSuffix;
-      if (buildBluetoothDeviceName(configuredDeviceNameSuffix) !=
-          configuredDeviceNameOrSuffix) {
-        shouldWrite = true;
-      }
-    } else {
-      Serial.println("[CONFIG] Invalid Bluetooth device name. Using default");
-      shouldWrite = true;
-    }
-  } else {
-    Serial.println("[CONFIG] Bluetooth device name missing. Using default");
-    shouldWrite = true;
-  }
-
   if (shouldWrite) {
-    writeConfigToDisk(config);
+    writeConfigToDisk(config, defaultBluetoothNameSuffix);
   }
 
   return config;

@@ -5,7 +5,9 @@
 #include <string>
 
 // Increment this whenever the persisted config schema changes.
-#define XRP_CONFIG_VERSION 2
+#define XRP_CONFIG_VERSION 3
+
+constexpr const char XRP_CONFIG_PATH[] = "/config.ini";
 
 constexpr const char XRP_BLUETOOTH_NAME_PREFIX[] = "WPIXRP-";
 constexpr size_t XRP_BLUETOOTH_NAME_MAX_LENGTH = 26;
@@ -23,7 +25,8 @@ class XRPConfiguration {
  public:
   XRPBluetoothConfig bluetoothConfig;
 
-  std::string toJsonString() const;
+  std::string toIniString(
+      const std::string& defaultBluetoothNameSuffix) const;
 };
 
 std::string buildBluetoothDeviceName(const std::string& deviceNameSuffix);
