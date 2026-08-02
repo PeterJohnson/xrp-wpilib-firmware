@@ -203,6 +203,20 @@ void writeStatusToDisk(const char* chipID, const char* diagnosticsSnapshot) {
            static_cast<unsigned long>(_maxStatusBuildIntervalMs),
            static_cast<unsigned long>(_lastStatusAcceptedIntervalMs),
            static_cast<unsigned long>(_maxStatusAcceptedIntervalMs));
+  f.printf("Robot Control State: enabled=%s last_ctrl=0x%02x\n",
+           xrp::robotEnabled() ? "yes" : "no",
+           wpilibudp::lastControlByteReceived());
+  f.print("Encoder Raw Counts:");
+  for (int i = 0; i < 4; i++) {
+    f.printf(" e%d=%d", i, xrp::readEncoderRaw(i));
+  }
+  f.print("\n");
+  f.print("Encoder Raw Periods:");
+  for (int i = 0; i < 4; i++) {
+    f.printf(" e%d=0x%08lx", i,
+             static_cast<unsigned long>(xrp::readEncoderPeriod(i)));
+  }
+  f.print("\n");
   f.printf("Config Version: %d\n", XRP_CONFIG_VERSION);
   f.printf("Transport: Bluetooth LE GATT + L2CAP Credit-Based Mode\n");
   f.printf("Bluetooth Name: %s\n", BLUETOOTH_DEVICE_NAME);
