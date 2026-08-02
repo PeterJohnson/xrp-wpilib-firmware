@@ -29,14 +29,14 @@ const unsigned char* GetResource_VERSION(size_t* len);
 char BLUETOOTH_DEVICE_NAME[32];
 char CHIP_ID[20];
 
-char transportPacketBuf[bluetooth_transport::kMaxPacketSize];
+char transportPacketBuf[bluetooth_transport::MAX_PACKET_SIZE];
 
 // TEMP: Status
 unsigned long _lastMessageStatusPrint = 0;
 unsigned long _lastStatusDiskWrite = 0;
 uint32_t _statusDiskWriteCount = 0;
 volatile bool _statusDriveMounted = false;
-constexpr unsigned long kStatusDiskUpdateIntervalMs = 10000;
+constexpr unsigned long STATUS_DISK_UPDATE_INTERVAL_MS = 10000;
 
 unsigned long _avgLoopTimeUs = 0;
 unsigned long _loopTimeMeasurementCount = 0;
@@ -182,12 +182,12 @@ void writeStatusToDisk(const char* chipID, const char* diagnosticsSnapshot) {
   f.printf("Config Version: %d\n", XRP_CONFIG_VERSION);
   f.printf("Transport: Bluetooth LE GATT + L2CAP Credit-Based Mode\n");
   f.printf("Bluetooth Name: %s\n", BLUETOOTH_DEVICE_NAME);
-  f.printf("GATT Service UUID: %s\n", bluetooth_transport::kGattServiceUuid);
+  f.printf("GATT Service UUID: %s\n", bluetooth_transport::GATT_SERVICE_UUID);
   f.printf("GATT Control Characteristic UUID: %s\n",
-           bluetooth_transport::kGattControlCharacteristicUuid);
+           bluetooth_transport::GATT_CONTROL_CHARACTERISTIC_UUID);
   f.printf("GATT Status Characteristic UUID: %s\n",
-           bluetooth_transport::kGattStatusCharacteristicUuid);
-  f.printf("LE PSM: 0x%04x\n", bluetooth_transport::kLePsm);
+           bluetooth_transport::GATT_STATUS_CHARACTERISTIC_UUID);
+  f.printf("LE PSM: 0x%04x\n", bluetooth_transport::LE_PSM);
   f.printf("Preferred Connection Interval: 7.5-15 ms, latency 0\n");
   f.printf("Packet Framing: one BLE packet per WPILib XRP payload\n");
 
@@ -323,12 +323,14 @@ void sendData() {
   int size = 0;
   char buffer[512];
   int ptr = 0;
+  uint16_t fieldMask = 0;
 
   uint16ToNetwork(seq, buffer);
-  buffer[2] = 0;  // Unset the control byte
-  ptr = 3;
+  buffer[2] = wpilibudp::lastControlByteReceived();
+  ptr = wpilibudp::PACKET_HEADER_SIZE;
 
   // Encoders
+  static constexpr uint divisor = xrp::Encoder::getDivisor();
   for (int i = 0; i < 4; i++) {
     int encoderValue = xrp::readEncoderRaw(i);
     uint encoderPeriod = xrp::readEncoderPeriod(i);
@@ -340,15 +342,15 @@ void sendData() {
       encoderPeriod ^= 1;  // Last bit is direction bit; Flip it.
     }
 
-    static constexpr uint divisor = xrp::Encoder::getDivisor();
-
-    ptr += wpilibudp::writeEncoderData(i, encoderValue, encoderPeriod, divisor,
+    fieldMask |= wpilibudp::STATUS_ENCODER_0 << i;
+    ptr += wpilibudp::writeEncoderData(encoderValue, encoderPeriod, divisor,
                                        buffer, ptr);
-  }  // 4x 15 bytes
+  }
 
   // DIO (currently just the button)
-  ptr += wpilibudp::writeDIOData(0, xrp::isUserButtonPressed(), buffer, ptr);
-  // 1x 4 bytes
+  fieldMask |= wpilibudp::STATUS_DIO;
+  ptr += wpilibudp::writeDIOData(0x01, xrp::isUserButtonPressed() ? 0x01 : 0x00,
+                                 buffer, ptr);
 
   // Gyro and accel data
   float gyroRates[3] = {
@@ -369,21 +371,26 @@ void sendData() {
       xrp::imuGetAccelZ(),
   };
 
+  fieldMask |= wpilibudp::STATUS_GYRO;
   ptr += wpilibudp::writeGyroData(gyroRates, gyroAngles, buffer, ptr);
-  // 1x 26 bytes
+  fieldMask |= wpilibudp::STATUS_ACCEL;
   ptr += wpilibudp::writeAccelData(accels, buffer, ptr);
-  // 1x 14 bytes
 
   if (xrp::reflectanceInitialized()) {
-    ptr += wpilibudp::writeAnalogData(0, xrp::getReflectanceLeft5V(), buffer, ptr);
-    ptr += wpilibudp::writeAnalogData(1, xrp::getReflectanceRight5V(), buffer, ptr);
+    fieldMask |= wpilibudp::STATUS_ANALOG_0;
+    ptr += wpilibudp::writeAnalogData(xrp::getReflectanceLeft5V(), buffer, ptr);
+    fieldMask |= wpilibudp::STATUS_ANALOG_1;
+    ptr += wpilibudp::writeAnalogData(xrp::getReflectanceRight5V(), buffer, ptr);
   }
 
   if (xrp::rangefinderInitialized()) {
-    ptr += wpilibudp::writeAnalogData(2, xrp::getRangefinderDistance5V(), buffer, ptr);
+    fieldMask |= wpilibudp::STATUS_ANALOG_2;
+    ptr += wpilibudp::writeAnalogData(xrp::getRangefinderDistance5V(), buffer, ptr);
   }
 
+  fieldMask |= wpilibudp::STATUS_TIMING;
   ptr += wpilibudp::writeTimingData(buffer, ptr);
+  uint16ToNetwork(fieldMask, buffer, 3);
 
   // ptr should now point to 1 past the last byte
   size = ptr;
@@ -394,7 +401,7 @@ void sendData() {
 }
 
 void checkPrintStatus() {
-  if (millis() - _lastStatusDiskWrite >= kStatusDiskUpdateIntervalMs) {
+  if (millis() - _lastStatusDiskWrite >= STATUS_DISK_UPDATE_INTERVAL_MS) {
     writeStatusToDiskSafely("periodic refresh");
   }
 

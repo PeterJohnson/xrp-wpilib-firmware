@@ -6,10 +6,10 @@
 
 namespace {
 
-constexpr const char* kConfigPath = "/config.json";
+constexpr const char* CONFIG_PATH = "/config.json";
 
 void writeConfigToDisk(const XRPConfiguration& config) {
-  File f = LittleFS.open(kConfigPath, "w");
+  File f = LittleFS.open(CONFIG_PATH, "w");
   f.print(config.toJsonString().c_str());
   f.close();
 }
@@ -74,7 +74,7 @@ std::string XRPConfiguration::toJsonString() const {
 
 XRPConfiguration loadConfiguration(
     const std::string& defaultBluetoothNameSuffix) {
-  File f = LittleFS.open(kConfigPath, "r");
+  File f = LittleFS.open(CONFIG_PATH, "r");
   if (!f) {
     Serial.println("[CONFIG] No config file found. Creating default");
     return resetToDefaultConfig(defaultBluetoothNameSuffix);

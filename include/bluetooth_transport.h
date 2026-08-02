@@ -63,16 +63,16 @@ struct ConnectionDiagnostics {
   uint8_t lastGattNotifyResult = 0;
 };
 
-constexpr size_t kMaxPacketSize = 512;
-constexpr unsigned kLePsm = 0x0081;
-constexpr const char* kGattServiceUuid = "7d2ea28a-f7bd-485d-9d6a-2c3f0b214a3f";
-constexpr const char* kGattControlCharacteristicUuid =
+constexpr size_t MAX_PACKET_SIZE = 512;
+constexpr unsigned LE_PSM = 0x0081;
+constexpr const char* GATT_SERVICE_UUID = "7d2ea28a-f7bd-485d-9d6a-2c3f0b214a3f";
+constexpr const char* GATT_CONTROL_CHARACTERISTIC_UUID =
     "7d2ea28b-f7bd-485d-9d6a-2c3f0b214a3f";
-constexpr const char* kGattStatusCharacteristicUuid =
+constexpr const char* GATT_STATUS_CHARACTERISTIC_UUID =
     "7d2ea28c-f7bd-485d-9d6a-2c3f0b214a3f";
-constexpr unsigned kPreferredConnectionIntervalMin = 6;   // 7.5 ms
-constexpr unsigned kPreferredConnectionIntervalMax = 12;  // 15 ms
-constexpr unsigned kPreferredSlaveLatency = 0;
+constexpr unsigned PREFERRED_CONNECTION_INTERVAL_MIN = 6;   // 7.5 ms
+constexpr unsigned PREFERRED_CONNECTION_INTERVAL_MAX = 12;  // 15 ms
+constexpr unsigned PREFERRED_SLAVE_LATENCY = 0;
 
 void begin(const char* deviceName);
 const AdvertisementDiagnostics& advertisementDiagnostics();

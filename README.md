@@ -67,7 +67,38 @@ The firmware exposes two packet transports:
 
 Each GATT write value, GATT notification value, or L2CAP SDU contains exactly one WPILib XRP protocol packet. There is no additional length prefix inside the Bluetooth payload.
 
-Each protocol packet starts with a 2-byte big-endian sequence number, a 1-byte control field, and a series of `[size][tag][payload]` chunks. Status packets include a timing chunk with tag `0x19`, size `7`, payload `[lastControlSeq:u16][controlRxAgeUs:u32]`. `lastControlSeq` echoes the most recent accepted control packet sequence number, and `controlRxAgeUs` is the number of microseconds between receiving that control packet and producing the status packet. Clients can use this echo with their local control-packet send timestamps to estimate application-level round-trip latency.
+Each protocol packet starts with a 5-byte header:
+
+```text
+[seq:u16][ctrl:u8][fieldMask:u16][payload...]
+```
+
+All multi-byte values are big-endian. The payload contains each field selected by `fieldMask`, emitted in ascending bit order. Packets with unknown field bits or payload sizes that do not exactly match the selected fields are ignored.
+
+Control packets sent to the XRP use these field bits:
+
+| Bit | Field | Payload |
+|-----|-------|---------|
+| 0-3 | Motor 0-3 | `pwm:i16` |
+| 4-7 | Servo 4-7 | `degrees:u8` |
+| 8 | DIO 0-7 | `presentMask:u8`, `valueMask:u8` |
+
+Status packets sent by the XRP use these field bits:
+
+| Bit | Field | Payload |
+|-----|-------|---------|
+| 0-3 | Encoder 0-3 | `count:i32`, `periodNumerator:u32` |
+| 4 | DIO 0-7 | `presentMask:u8`, `valueMask:u8` |
+| 5 | Gyro | `rateX:f32`, `rateY:f32`, `rateZ:f32`, `angleX:f32`, `angleY:f32`, `angleZ:f32` |
+| 6 | Accel | `accelX:f32`, `accelY:f32`, `accelZ:f32` |
+| 7-9 | Analog 0-2 | `value:u16` |
+| 10 | Timing | `lastControlSeq:u16`, `controlRxAge10Us:u16` |
+
+Motor `pwm` values are clamped to `-255` to `255`, which maps directly to the XRP motor PWM magnitude plus direction. Servo `degrees` values are clamped to `0` to `180`, matching the integer degree value applied by the XRP servo library. DIO payload bits are channel-indexed; bit `n` in `presentMask` means DIO channel `n` is included, and bit `n` in `valueMask` is that channel's value. XRP status currently reports DIO 0, the user button. Analog values are scaled over `0` to `5 V`, where `0` is `0 V` and `65535` is `5 V`.
+
+Encoder period uses a fixed denominator of `1000000`; `periodNumerator >> 1` is the period in microseconds, and the low bit is the direction bit (`1` for forward, `0` for reverse). A `periodNumerator` of `0xffffffff` indicates no valid period.
+
+The XRP status `ctrl` byte is a copy of the most recent accepted control packet `ctrl` byte. The timing field's `lastControlSeq` echoes the most recent accepted control packet sequence number, and `controlRxAge10Us * 10` is the number of microseconds between receiving that control packet and producing the status packet. A `controlRxAge10Us` value of `0xffff` indicates no control packet has been accepted yet or the age exceeded the representable range. Clients can use this echo with their local control-packet send timestamps to estimate application-level round-trip latency.
 
 The firmware advertises preferred connection parameters of 7.5 ms minimum interval, 15 ms maximum interval, and latency 0. The central device ultimately decides the actual connection parameters. GATT clients should negotiate an ATT MTU large enough for the largest WPILib XRP packet they expect to receive; the firmware does not fragment packets across multiple notifications.
 

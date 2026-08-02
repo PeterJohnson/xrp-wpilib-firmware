@@ -1,25 +1,61 @@
 #pragma once
 
-#define XRP_TAG_MOTOR 0x12
-#define XRP_TAG_SERVO 0x13
-#define XRP_TAG_DIO 0x14
-#define XRP_TAG_ANALOG 0x15
-#define XRP_TAG_GYRO 0x16
-#define XRP_TAG_ACCEL 0x17
-#define XRP_TAG_ENCODER 0x18
-#define XRP_TAG_TIMING 0x19
+#include <stdint.h>
 
 namespace wpilibudp {
+
+constexpr int PACKET_HEADER_SIZE = 5;
+constexpr uint32_t ENCODER_PERIOD_DENOMINATOR = 1000000;
+constexpr uint32_t CONTROL_RX_AGE_UNIT_US = 10;
+constexpr uint16_t INVALID_CONTROL_RX_AGE_10_US = UINT16_MAX;
+constexpr int16_t MOTOR_MAX_PWM = 255;
+constexpr uint8_t SERVO_MAX_DEGREES = 180;
+constexpr uint16_t ANALOG_MAX_VALUE = UINT16_MAX;
+constexpr float ANALOG_MAX_VOLTAGE = 5.0f;
+
+constexpr uint16_t CONTROL_MOTOR_0 = 1u << 0;
+constexpr uint16_t CONTROL_MOTOR_1 = 1u << 1;
+constexpr uint16_t CONTROL_MOTOR_2 = 1u << 2;
+constexpr uint16_t CONTROL_MOTOR_3 = 1u << 3;
+constexpr uint16_t CONTROL_SERVO_4 = 1u << 4;
+constexpr uint16_t CONTROL_SERVO_5 = 1u << 5;
+constexpr uint16_t CONTROL_SERVO_6 = 1u << 6;
+constexpr uint16_t CONTROL_SERVO_7 = 1u << 7;
+constexpr uint16_t CONTROL_DIO = 1u << 8;
+constexpr uint16_t CONTROL_ALL_FIELDS =
+    CONTROL_MOTOR_0 | CONTROL_MOTOR_1 | CONTROL_MOTOR_2 | CONTROL_MOTOR_3 |
+    CONTROL_SERVO_4 | CONTROL_SERVO_5 | CONTROL_SERVO_6 | CONTROL_SERVO_7 |
+    CONTROL_DIO;
+
+constexpr uint16_t STATUS_ENCODER_0 = 1u << 0;
+constexpr uint16_t STATUS_ENCODER_1 = 1u << 1;
+constexpr uint16_t STATUS_ENCODER_2 = 1u << 2;
+constexpr uint16_t STATUS_ENCODER_3 = 1u << 3;
+constexpr uint16_t STATUS_DIO = 1u << 4;
+constexpr uint16_t STATUS_GYRO = 1u << 5;
+constexpr uint16_t STATUS_ACCEL = 1u << 6;
+constexpr uint16_t STATUS_ANALOG_0 = 1u << 7;
+constexpr uint16_t STATUS_ANALOG_1 = 1u << 8;
+constexpr uint16_t STATUS_ANALOG_2 = 1u << 9;
+constexpr uint16_t STATUS_TIMING = 1u << 10;
+constexpr uint16_t STATUS_ALL_FIELDS =
+    STATUS_ENCODER_0 | STATUS_ENCODER_1 | STATUS_ENCODER_2 | STATUS_ENCODER_3 |
+    STATUS_DIO | STATUS_GYRO | STATUS_ACCEL | STATUS_ANALOG_0 | STATUS_ANALOG_1 |
+    STATUS_ANALOG_2 | STATUS_TIMING;
 
 bool dsWatchdogActive();
 
 bool processPacket(char* buffer, int size);
 void resetState();
+uint8_t lastControlByteReceived();
 
-int writeEncoderData(int deviceId, int count, unsigned period, unsigned divisor, char* buffer, int offset = 0);
-int writeDIOData(int deviceId, bool value, char* buffer, int offset = 0);
-int writeGyroData(float rates[3], float angles[3], char* buffer, int offset = 0);
+int writeEncoderData(int count, unsigned period, unsigned divisor, char* buffer,
+                     int offset = 0);
+int writeDIOData(uint8_t presentMask, uint8_t valueMask, char* buffer,
+                 int offset = 0);
+int writeGyroData(float rates[3], float angles[3], char* buffer,
+                  int offset = 0);
 int writeAccelData(float accels[3], char* buffer, int offset = 0);
-int writeAnalogData(int deviceId, float voltage, char* buffer, int offset = 0);
+int writeAnalogData(float voltage, char* buffer, int offset = 0);
 int writeTimingData(char* buffer, int offset = 0);
 } // namespace wpilibudp
