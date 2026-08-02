@@ -60,6 +60,7 @@ bool gattNotificationsEnabled = false;
 
 uint8_t txBuffer[MAX_PACKET_SIZE];
 uint16_t txSize = 0;
+uint32_t txPendingSinceMicros = 0;
 volatile bool txPending = false;
 volatile bool txCanSendRequested = false;
 Transport txTransport = Transport::TRANSPORT_NONE;
@@ -115,20 +116,44 @@ uint16_t currentGattPayloadMtu() {
   return gattPayloadMtu;
 }
 
+void recordTxPendingDuration() {
+  if (!txPending || txPendingSinceMicros == 0) {
+    return;
+  }
+
+  uint32_t pendingDurationUs =
+      static_cast<uint32_t>(micros() - txPendingSinceMicros);
+  connectionInfo.lastTxPendingDurationUs = pendingDurationUs;
+  if (pendingDurationUs > connectionInfo.maxTxPendingDurationUs) {
+    connectionInfo.maxTxPendingDurationUs = pendingDurationUs;
+  }
+}
+
 void clearPendingTxFor(Transport transport) {
   if (txPending && txTransport == transport) {
+    recordTxPendingDuration();
     txPending = false;
     txCanSendRequested = false;
     txTransport = Transport::TRANSPORT_NONE;
     txSize = 0;
+    txPendingSinceMicros = 0;
   }
 }
 
 void finishPendingTx() {
+  recordTxPendingDuration();
   txPending = false;
   txCanSendRequested = false;
   txTransport = Transport::TRANSPORT_NONE;
   txSize = 0;
+  txPendingSinceMicros = 0;
+}
+
+void recordConnectionParameters(uint16_t interval, uint16_t latency,
+                                uint16_t supervisionTimeout) {
+  connectionInfo.connectionInterval = interval;
+  connectionInfo.connectionLatency = latency;
+  connectionInfo.connectionSupervisionTimeout = supervisionTimeout;
 }
 
 bool queueIncomingPacket(const uint8_t* packet, uint16_t size, Transport transport) {
@@ -572,9 +597,11 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
           uint8_t reason = hci_event_disconnection_complete_get_reason(packet);
           Serial.printf("[BT] LE disconnected handle=0x%04x reason=0x%02x\n",
                         handle, reason);
+          connectionInfo.lastDisconnectReason = reason;
 
           if (handle == leConnectionHandle) {
             leConnectionHandle = HCI_CON_HANDLE_INVALID;
+            recordConnectionParameters(0, 0, 0);
             clearL2capConnection();
             clearGattConnection();
             clearRxQueue();
@@ -613,6 +640,13 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
                 }
 
                 leConnectionHandle = handle;
+                recordConnectionParameters(
+                    hci_subevent_le_connection_complete_get_conn_interval(
+                        packet),
+                    hci_subevent_le_connection_complete_get_conn_latency(
+                        packet),
+                    hci_subevent_le_connection_complete_get_supervision_timeout(
+                        packet));
                 clearL2capConnection();
                 clearGattConnection();
                 clearRxQueue();
@@ -623,11 +657,17 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
             case HCI_SUBEVENT_LE_CONNECTION_UPDATE_COMPLETE:
               if (hci_subevent_le_connection_update_complete_get_status(packet) ==
                   ERROR_CODE_SUCCESS) {
+                recordConnectionParameters(
+                    hci_subevent_le_connection_update_complete_get_conn_interval(
+                        packet),
+                    hci_subevent_le_connection_update_complete_get_conn_latency(
+                        packet),
+                    hci_subevent_le_connection_update_complete_get_supervision_timeout(
+                        packet));
+                ++connectionInfo.connectionUpdates;
                 Serial.printf("[BT] Connection interval now %u units, latency %u\n",
-                              hci_subevent_le_connection_update_complete_get_conn_interval(
-                                  packet),
-                              hci_subevent_le_connection_update_complete_get_conn_latency(
-                                  packet));
+                              connectionInfo.connectionInterval,
+                              connectionInfo.connectionLatency);
               }
               break;
 
@@ -850,6 +890,10 @@ const ConnectionDiagnostics& connectionDiagnostics() {
   connectionInfo.rxQueueMaxUsed = rxMaxQueueUsed;
   connectionInfo.activeTransport = static_cast<uint8_t>(activeTransport);
   connectionInfo.txTransport = static_cast<uint8_t>(txTransport);
+  connectionInfo.txPendingAgeUs =
+      txPending && txPendingSinceMicros != 0
+          ? static_cast<uint32_t>(micros() - txPendingSinceMicros)
+          : 0;
   connectionInfo.leConnectionHandle = leConnectionHandle;
   connectionInfo.l2capChannelId = l2capChannelId;
   connectionInfo.l2capRemoteMtu = l2capRemoteMtu;
@@ -927,12 +971,17 @@ bool readPacket(char* buffer, size_t bufferSize, size_t* packetSize) {
 }
 
 bool sendPacket(const char* buffer, size_t packetSize) {
+  ++connectionInfo.statusSendAttempts;
+  connectionInfo.lastStatusPacketSize = packetSize;
+
   if (txPending) {
+    ++connectionInfo.statusSendBusyDrops;
     requestCanSend();
     return false;
   }
 
   if (packetSize == 0 || packetSize > MAX_PACKET_SIZE) {
+    ++connectionInfo.statusSendInvalidSizeDrops;
     return false;
   }
 
@@ -950,11 +999,13 @@ bool sendPacket(const char* buffer, size_t packetSize) {
         ++connectionInfo.gattStatusPacketsBlockedMtu;
       }
     }
+    ++connectionInfo.statusSendNoTransportDrops;
     return false;
   }
 
   memcpy(txBuffer, buffer, packetSize);
   txSize = packetSize;
+  txPendingSinceMicros = micros();
   txTransport = transport;
   txPending = true;
   txCanSendRequested = false;

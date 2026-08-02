@@ -39,7 +39,17 @@ volatile bool _statusDriveMounted = false;
 constexpr unsigned long STATUS_DISK_UPDATE_INTERVAL_MS = 10000;
 
 unsigned long _avgLoopTimeUs = 0;
+unsigned long _maxLoopTimeUs = 0;
 unsigned long _loopTimeMeasurementCount = 0;
+uint32_t _statusPacketBuildCount = 0;
+uint32_t _statusPacketAcceptedCount = 0;
+uint32_t _statusPacketRejectedCount = 0;
+unsigned long _lastStatusBuildMs = 0;
+unsigned long _lastStatusBuildIntervalMs = 0;
+unsigned long _maxStatusBuildIntervalMs = 0;
+unsigned long _lastStatusAcceptedMs = 0;
+unsigned long _lastStatusAcceptedIntervalMs = 0;
+unsigned long _maxStatusAcceptedIntervalMs = 0;
 
 uint16_t seq = 0;
 
@@ -179,6 +189,20 @@ void writeStatusToDisk(const char* chipID, const char* diagnosticsSnapshot) {
   f.printf("Status Uptime ms: %lu\n", static_cast<unsigned long>(millis()));
   f.printf("USB Status Drive Mounted: %s\n",
            _statusDriveMounted ? "yes" : "no");
+  f.printf("Firmware Loop: avg_us=%lu max_us=%lu samples=%lu\n",
+           static_cast<unsigned long>(_avgLoopTimeUs),
+           static_cast<unsigned long>(_maxLoopTimeUs),
+           static_cast<unsigned long>(_loopTimeMeasurementCount));
+  f.printf("Status Packet Cadence: built=%lu accepted=%lu rejected=%lu "
+           "last_build_gap_ms=%lu max_build_gap_ms=%lu "
+           "last_accept_gap_ms=%lu max_accept_gap_ms=%lu\n",
+           static_cast<unsigned long>(_statusPacketBuildCount),
+           static_cast<unsigned long>(_statusPacketAcceptedCount),
+           static_cast<unsigned long>(_statusPacketRejectedCount),
+           static_cast<unsigned long>(_lastStatusBuildIntervalMs),
+           static_cast<unsigned long>(_maxStatusBuildIntervalMs),
+           static_cast<unsigned long>(_lastStatusAcceptedIntervalMs),
+           static_cast<unsigned long>(_maxStatusAcceptedIntervalMs));
   f.printf("Config Version: %d\n", XRP_CONFIG_VERSION);
   f.printf("Transport: Bluetooth LE GATT + L2CAP Credit-Based Mode\n");
   f.printf("Bluetooth Name: %s\n", BLUETOOTH_DEVICE_NAME);
@@ -205,6 +229,15 @@ void writeStatusToDisk(const char* chipID, const char* diagnosticsSnapshot) {
   f.printf("LE Connected: %s handle=0x%04x\n",
            connectionDiagnostics.leConnected ? "yes" : "no",
            connectionDiagnostics.leConnectionHandle);
+  f.printf("LE Connection Parameters: interval_units=%u interval_ms_x100=%u "
+           "latency=%u supervision_timeout_units=%u updates=%lu "
+           "last_disconnect_reason=0x%02x\n",
+           connectionDiagnostics.connectionInterval,
+           connectionDiagnostics.connectionInterval * 125,
+           connectionDiagnostics.connectionLatency,
+           connectionDiagnostics.connectionSupervisionTimeout,
+           static_cast<unsigned long>(connectionDiagnostics.connectionUpdates),
+           connectionDiagnostics.lastDisconnectReason);
   f.printf("L2CAP Connected: %s cid=0x%04x remote_mtu=%u\n",
            connectionDiagnostics.l2capConnected ? "yes" : "no",
            connectionDiagnostics.l2capChannelId,
@@ -230,12 +263,28 @@ void writeStatusToDisk(const char* chipID, const char* diagnosticsSnapshot) {
   f.printf("GATT Notifications Enabled: %s\n",
            connectionDiagnostics.gattNotificationsEnabled ? "yes" : "no");
   f.printf("Transport State: active=%u tx=%u tx_pending=%s tx_requested=%s "
-           "rx_overflow=%s\n",
+           "rx_overflow=%s pending_age_us=%lu last_pending_us=%lu "
+           "max_pending_us=%lu\n",
            connectionDiagnostics.activeTransport,
            connectionDiagnostics.txTransport,
            connectionDiagnostics.txPending ? "yes" : "no",
            connectionDiagnostics.txCanSendRequested ? "yes" : "no",
-           connectionDiagnostics.rxOverflow ? "yes" : "no");
+           connectionDiagnostics.rxOverflow ? "yes" : "no",
+           static_cast<unsigned long>(connectionDiagnostics.txPendingAgeUs),
+           static_cast<unsigned long>(
+               connectionDiagnostics.lastTxPendingDurationUs),
+           static_cast<unsigned long>(
+               connectionDiagnostics.maxTxPendingDurationUs));
+  f.printf("Transport Send Counters: attempts=%lu busy_drops=%lu "
+           "no_transport_drops=%lu invalid_size_drops=%lu last_size=%u\n",
+           static_cast<unsigned long>(connectionDiagnostics.statusSendAttempts),
+           static_cast<unsigned long>(
+               connectionDiagnostics.statusSendBusyDrops),
+           static_cast<unsigned long>(
+               connectionDiagnostics.statusSendNoTransportDrops),
+           static_cast<unsigned long>(
+               connectionDiagnostics.statusSendInvalidSizeDrops),
+           connectionDiagnostics.lastStatusPacketSize);
   f.printf("RX Queue: used=%u/%u max_used=%u queued=%lu dropped=%lu\n",
            connectionDiagnostics.rxQueueUsed,
            connectionDiagnostics.rxQueueDepth,
@@ -320,6 +369,16 @@ bool writeStatusToDiskSafely(const char* diagnosticsSnapshot) {
 // ==================================================
 
 void sendData() {
+  unsigned long statusBuildMs = millis();
+  if (_lastStatusBuildMs != 0) {
+    _lastStatusBuildIntervalMs = statusBuildMs - _lastStatusBuildMs;
+    if (_lastStatusBuildIntervalMs > _maxStatusBuildIntervalMs) {
+      _maxStatusBuildIntervalMs = _lastStatusBuildIntervalMs;
+    }
+  }
+  _lastStatusBuildMs = statusBuildMs;
+  _statusPacketBuildCount++;
+
   int size = 0;
   char buffer[512];
   int ptr = 0;
@@ -396,7 +455,19 @@ void sendData() {
   size = ptr;
 
   if (bluetooth_transport::sendPacket(buffer, size)) {
+    unsigned long statusAcceptedMs = millis();
+    if (_lastStatusAcceptedMs != 0) {
+      _lastStatusAcceptedIntervalMs =
+          statusAcceptedMs - _lastStatusAcceptedMs;
+      if (_lastStatusAcceptedIntervalMs > _maxStatusAcceptedIntervalMs) {
+        _maxStatusAcceptedIntervalMs = _lastStatusAcceptedIntervalMs;
+      }
+    }
+    _lastStatusAcceptedMs = statusAcceptedMs;
+    _statusPacketAcceptedCount++;
     seq++;
+  } else {
+    _statusPacketRejectedCount++;
   }
 }
 
@@ -454,6 +525,9 @@ void checkPrintStatus() {
 
 void updateLoopTime(unsigned long loopStart) {
   unsigned long loopTime = micros() - loopStart;
+  if (loopTime > _maxLoopTimeUs) {
+    _maxLoopTimeUs = loopTime;
+  }
   unsigned long totalTime = _avgLoopTimeUs * _loopTimeMeasurementCount;
   _loopTimeMeasurementCount++;
 
