@@ -42,6 +42,7 @@ struct ConnectionDiagnostics {
   uint16_t lastStatusPacketSize = 0;
   uint16_t lastGattStatusPacketSize = 0;
   uint32_t statusSendAttempts = 0;
+  uint32_t statusSendCoalesced = 0;
   uint32_t statusSendBusyDrops = 0;
   uint32_t statusSendNoTransportDrops = 0;
   uint32_t statusSendInvalidSizeDrops = 0;

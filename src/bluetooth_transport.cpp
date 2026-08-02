@@ -214,15 +214,37 @@ bool canSendGatt(size_t packetSize) {
          gattNotificationsEnabled && packetSize <= currentGattPayloadMtu();
 }
 
+bool packetFitsTransport(Transport transport, size_t packetSize) {
+  if (transport == Transport::TRANSPORT_L2CAP) {
+    return l2capChannelId != 0 && packetSize <= l2capRemoteMtu;
+  }
+
+  if (transport == Transport::TRANSPORT_GATT) {
+    hci_con_handle_t handle = gattConnectionHandle != HCI_CON_HANDLE_INVALID
+                                  ? gattConnectionHandle
+                                  : leConnectionHandle;
+    return handle != HCI_CON_HANDLE_INVALID &&
+           gattNotificationsEnabled && packetSize <= currentGattPayloadMtu();
+  }
+
+  return false;
+}
+
 Transport selectTxTransport(size_t packetSize) {
   if (activeTransport == Transport::TRANSPORT_L2CAP) {
-    return canSendL2cap(packetSize) ? Transport::TRANSPORT_L2CAP
-                                    : Transport::TRANSPORT_NONE;
+    if (canSendL2cap(packetSize)) {
+      return Transport::TRANSPORT_L2CAP;
+    }
+    return canSendGatt(packetSize) ? Transport::TRANSPORT_GATT
+                                   : Transport::TRANSPORT_NONE;
   }
 
   if (activeTransport == Transport::TRANSPORT_GATT) {
-    return canSendGatt(packetSize) ? Transport::TRANSPORT_GATT
-                                   : Transport::TRANSPORT_NONE;
+    if (canSendGatt(packetSize)) {
+      return Transport::TRANSPORT_GATT;
+    }
+    return canSendL2cap(packetSize) ? Transport::TRANSPORT_L2CAP
+                                    : Transport::TRANSPORT_NONE;
   }
 
   if (canSendL2cap(packetSize)) {
@@ -974,14 +996,22 @@ bool sendPacket(const char* buffer, size_t packetSize) {
   ++connectionInfo.statusSendAttempts;
   connectionInfo.lastStatusPacketSize = packetSize;
 
-  if (txPending) {
-    ++connectionInfo.statusSendBusyDrops;
-    requestCanSend();
+  if (packetSize == 0 || packetSize > MAX_PACKET_SIZE) {
+    ++connectionInfo.statusSendInvalidSizeDrops;
     return false;
   }
 
-  if (packetSize == 0 || packetSize > MAX_PACKET_SIZE) {
-    ++connectionInfo.statusSendInvalidSizeDrops;
+  if (txPending) {
+    if (packetFitsTransport(txTransport, packetSize)) {
+      memcpy(txBuffer, buffer, packetSize);
+      txSize = packetSize;
+      ++connectionInfo.statusSendCoalesced;
+      requestCanSend();
+      return true;
+    }
+
+    ++connectionInfo.statusSendBusyDrops;
+    requestCanSend();
     return false;
   }
 

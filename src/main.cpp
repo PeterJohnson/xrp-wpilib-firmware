@@ -289,9 +289,10 @@ void writeStatusToDisk(const char* chipID, const char* diagnosticsSnapshot) {
                connectionDiagnostics.lastTxPendingDurationUs),
            static_cast<unsigned long>(
                connectionDiagnostics.maxTxPendingDurationUs));
-  f.printf("Transport Send Counters: attempts=%lu busy_drops=%lu "
+  f.printf("Transport Send Counters: attempts=%lu coalesced=%lu busy_drops=%lu "
            "no_transport_drops=%lu invalid_size_drops=%lu last_size=%u\n",
            static_cast<unsigned long>(connectionDiagnostics.statusSendAttempts),
+           static_cast<unsigned long>(connectionDiagnostics.statusSendCoalesced),
            static_cast<unsigned long>(
                connectionDiagnostics.statusSendBusyDrops),
            static_cast<unsigned long>(
