@@ -39,6 +39,9 @@ struct ConnectionDiagnostics {
   uint16_t lastGattStatusPacketSize = 0;
   uint32_t rxPacketsQueued = 0;
   uint32_t rxPacketsDropped = 0;
+  uint32_t rejectedLeConnections = 0;
+  uint32_t rejectedGattConnections = 0;
+  uint32_t rejectedL2capConnections = 0;
   uint32_t l2capStatusPacketsQueued = 0;
   uint32_t l2capCanSendRequests = 0;
   uint32_t l2capCanSendCallbacks = 0;

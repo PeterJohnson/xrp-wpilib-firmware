@@ -270,6 +270,12 @@ void writeStatusToDisk(const char* chipID, const char* diagnosticsSnapshot) {
   f.printf("GATT Last Notify Results: request=0x%02x notify=0x%02x\n",
            connectionDiagnostics.lastGattNotifyRequestResult,
            connectionDiagnostics.lastGattNotifyResult);
+  f.printf("Rejected Connections: le=%lu gatt=%lu l2cap=%lu\n",
+           static_cast<unsigned long>(connectionDiagnostics.rejectedLeConnections),
+           static_cast<unsigned long>(
+               connectionDiagnostics.rejectedGattConnections),
+           static_cast<unsigned long>(
+               connectionDiagnostics.rejectedL2capConnections));
   f.printf("Advertising Data Applied After HCI Working: %s\n",
            advertisementDiagnostics.appliedAfterHciWorking ? "yes" : "no");
   f.printf("Advertising Data Length: %u/31\n",
@@ -399,7 +405,7 @@ void checkPrintStatus() {
                   "mtu:%u size:%u ctrl:%lu cccd:%lu q:%lu bN:%lu bM:%lu "
                   "req:%lu cb:%lu imm:%lu sent:%lu drop:%lu rx:%u/%u "
                   "rxmax:%u rxdrop:%lu l2q:%lu l2i:%lu l2s:%lu l2d:%lu "
-                  "last:%02x/%02x/%02x\n",
+                  "rej:%lu/%lu/%lu last:%02x/%02x/%02x\n",
                   millis(),
                   usedHeap,
                   bluetooth_transport::connected() ? 1 : 0,
@@ -429,6 +435,9 @@ void checkPrintStatus() {
                   static_cast<unsigned long>(btDiag.l2capImmediateSends),
                   static_cast<unsigned long>(btDiag.l2capPacketsSent),
                   static_cast<unsigned long>(btDiag.l2capSendDrops),
+                  static_cast<unsigned long>(btDiag.rejectedLeConnections),
+                  static_cast<unsigned long>(btDiag.rejectedGattConnections),
+                  static_cast<unsigned long>(btDiag.rejectedL2capConnections),
                   btDiag.lastL2capSendResult,
                   btDiag.lastGattNotifyRequestResult,
                   btDiag.lastGattNotifyResult);

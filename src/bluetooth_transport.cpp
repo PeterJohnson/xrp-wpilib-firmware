@@ -454,18 +454,36 @@ void restartAdvertisingIfIdle(const char* reason) {
   startAdvertising(reason);
 }
 
+void disconnectHandle(hci_con_handle_t handle, const char* reason) {
+  if (handle == HCI_CON_HANDLE_INVALID) {
+    return;
+  }
+
+  Serial.printf("[BT] Disconnecting LE link handle=0x%04x (%s)\n",
+                handle, reason);
+  uint8_t result = gap_disconnect(handle);
+  if (result != ERROR_CODE_SUCCESS && result != ERROR_CODE_COMMAND_DISALLOWED) {
+    Serial.printf("[BT] LE disconnect request failed: 0x%02x\n", result);
+  }
+}
+
 void disconnectLeConnection(const char* reason) {
   if (leConnectionHandle == HCI_CON_HANDLE_INVALID) {
     restartAdvertisingIfIdle(reason);
     return;
   }
 
-  Serial.printf("[BT] Disconnecting LE link handle=0x%04x (%s)\n",
-                leConnectionHandle, reason);
-  uint8_t result = gap_disconnect(leConnectionHandle);
-  if (result != ERROR_CODE_SUCCESS && result != ERROR_CODE_COMMAND_DISALLOWED) {
-    Serial.printf("[BT] LE disconnect request failed: 0x%02x\n", result);
-  }
+  disconnectHandle(leConnectionHandle, reason);
+}
+
+bool isForeignLeHandle(hci_con_handle_t handle) {
+  return leConnectionHandle != HCI_CON_HANDLE_INVALID &&
+         handle != leConnectionHandle;
+}
+
+bool isForeignGattHandle(hci_con_handle_t handle) {
+  return gattConnectionHandle != HCI_CON_HANDLE_INVALID &&
+         handle != gattConnectionHandle;
 }
 
 uint16_t handleGattRead(uint16_t characteristicId, uint8_t* buffer,
@@ -578,6 +596,20 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
                 hci_con_handle_t handle =
                     hci_subevent_le_connection_complete_get_connection_handle(
                         packet);
+                if (isForeignLeHandle(handle)) {
+                  ++connectionInfo.rejectedLeConnections;
+                  Serial.printf("[BT] Rejecting extra LE connection handle=0x%04x "
+                                "active=0x%04x\n",
+                                handle, leConnectionHandle);
+                  disconnectHandle(handle, "busy");
+                  break;
+                }
+                if (handle == leConnectionHandle) {
+                  Serial.printf("[BT] Duplicate LE connected event handle=0x%04x\n",
+                                handle);
+                  break;
+                }
+
                 leConnectionHandle = handle;
                 clearL2capConnection();
                 clearGattConnection();
@@ -602,13 +634,24 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
           }
           break;
 
-        case ATT_EVENT_CONNECTED:
-          gattConnectionHandle = att_event_connected_get_handle(packet);
+        case ATT_EVENT_CONNECTED: {
+          hci_con_handle_t handle = att_event_connected_get_handle(packet);
+          if (isForeignLeHandle(handle) || isForeignGattHandle(handle)) {
+            ++connectionInfo.rejectedGattConnections;
+            Serial.printf("[BT] Rejecting extra GATT connection handle=0x%04x "
+                          "active_le=0x%04x active_gatt=0x%04x\n",
+                          handle, leConnectionHandle, gattConnectionHandle);
+            disconnectHandle(handle, "busy GATT");
+            break;
+          }
+
+          gattConnectionHandle = handle;
           leConnectionHandle = gattConnectionHandle;
           updateGattPayloadMtu(att_server_get_mtu(gattConnectionHandle));
           Serial.printf("[BT] GATT connected handle=0x%04x mtu_payload=%u\n",
                         gattConnectionHandle, currentGattPayloadMtu());
           break;
+        }
 
         case ATT_EVENT_DISCONNECTED: {
           hci_con_handle_t handle = att_event_disconnected_get_handle(packet);
@@ -631,10 +674,33 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
         }
 
         case L2CAP_EVENT_CBM_INCOMING_CONNECTION: {
+          hci_con_handle_t handle =
+              l2cap_event_cbm_incoming_connection_get_handle(packet);
           uint16_t psm = l2cap_event_cbm_incoming_connection_get_psm(packet);
           uint16_t localCid =
               l2cap_event_cbm_incoming_connection_get_local_cid(packet);
           if (psm != kLePsm) {
+            break;
+          }
+
+          if (isForeignLeHandle(handle)) {
+            ++connectionInfo.rejectedL2capConnections;
+            Serial.printf("[BT] Declining L2CAP CBM connection from extra LE "
+                          "handle=0x%04x active=0x%04x cid=0x%04x\n",
+                          handle, leConnectionHandle, localCid);
+            l2cap_cbm_decline_connection(
+                localCid, L2CAP_CBM_CONNECTION_RESULT_NO_RESOURCES_AVAILABLE);
+            disconnectHandle(handle, "busy L2CAP");
+            break;
+          }
+
+          if (l2capChannelId != 0) {
+            ++connectionInfo.rejectedL2capConnections;
+            Serial.printf("[BT] Declining extra L2CAP CBM connection cid=0x%04x "
+                          "active=0x%04x\n",
+                          localCid, l2capChannelId);
+            l2cap_cbm_decline_connection(
+                localCid, L2CAP_CBM_CONNECTION_RESULT_NO_RESOURCES_AVAILABLE);
             break;
           }
 
@@ -647,16 +713,40 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
 
         case L2CAP_EVENT_CBM_CHANNEL_OPENED: {
           uint8_t status = l2cap_event_cbm_channel_opened_get_status(packet);
+          hci_con_handle_t handle =
+              l2cap_event_cbm_channel_opened_get_handle(packet);
+          uint16_t localCid =
+              l2cap_event_cbm_channel_opened_get_local_cid(packet);
           if (status != ERROR_CODE_SUCCESS) {
             Serial.printf("[BT] L2CAP CBM open failed: 0x%02x\n", status);
-            clearL2capConnection();
+            if (l2capChannelId == 0 || localCid == l2capChannelId) {
+              clearL2capConnection();
+            }
             break;
           }
 
-          l2capConnectionHandle =
-              l2cap_event_cbm_channel_opened_get_handle(packet);
+          if (isForeignLeHandle(handle)) {
+            ++connectionInfo.rejectedL2capConnections;
+            Serial.printf("[BT] Closing L2CAP channel from extra LE handle=0x%04x "
+                          "active=0x%04x cid=0x%04x\n",
+                          handle, leConnectionHandle, localCid);
+            l2cap_disconnect(localCid);
+            disconnectHandle(handle, "busy L2CAP open");
+            break;
+          }
+
+          if (l2capChannelId != 0 && localCid != l2capChannelId) {
+            ++connectionInfo.rejectedL2capConnections;
+            Serial.printf("[BT] Closing extra L2CAP channel cid=0x%04x "
+                          "active=0x%04x\n",
+                          localCid, l2capChannelId);
+            l2cap_disconnect(localCid);
+            break;
+          }
+
+          l2capConnectionHandle = handle;
           leConnectionHandle = l2capConnectionHandle;
-          l2capChannelId = l2cap_event_cbm_channel_opened_get_local_cid(packet);
+          l2capChannelId = localCid;
           l2capRemoteMtu =
               l2cap_event_cbm_channel_opened_get_remote_mtu(packet);
 
