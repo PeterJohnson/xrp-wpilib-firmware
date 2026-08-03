@@ -42,7 +42,7 @@ The Bluetooth name can also be found by connecting the XRP to a computer, naviga
 ### XRP Configuration
 The firmware stores its persistent configuration in `/config.ini` on LittleFS. It is a plain text INI file so it can be edited by hand in a text editor. If the file is missing, invalid, or uses an older schema version, the firmware rewrites it with the default Bluetooth configuration template on boot.
 
-The current configuration schema is version `3`:
+The current configuration schema is version `2`:
 
 ```ini
 # XRP firmware configuration
@@ -50,21 +50,21 @@ The current configuration schema is version `3`:
 # Lines starting with # or ; are comments.
 # Inline comments are allowed after whitespace.
 
-config_version = 3
+config_version = 2
 
 [bluetooth]
 # The firmware always advertises Bluetooth names with the WPIXRP- prefix.
 # Use either a full WPIXRP- name or just the suffix after WPIXRP-.
 # Suffix length: 1-19 printable ASCII characters.
 # Default: WPIXRP-AAAA-BBBB
-# device_name = WPIXRP-AAAA-BBBB
+# deviceName = "WPIXRP-AAAA-BBBB"
 ```
 
-`device_name` in the `[bluetooth]` section controls the advertised Bluetooth name. Leave it commented out to use the generated default. To customize the name, uncomment the setting and change the value:
+`deviceName` in the `[bluetooth]` section controls the advertised Bluetooth name. Leave it commented out to use the generated default. To customize the name, uncomment the setting and change the value:
 
 ```ini
 [bluetooth]
-device_name = My-XRP
+deviceName = "My-XRP"
 ```
 
 The value may be either the full `WPIXRP-AAAA-BBBB` name or the `AAAA-BBBB` suffix; the firmware always enforces the `WPIXRP-` prefix. The suffix after `WPIXRP-` must be 1-19 printable ASCII characters. The generated `WPIXRP-AAAA-BBBB` name is used as the default and fallback value. Restart the XRP after changing this value.
@@ -96,6 +96,7 @@ Control packets sent to the XRP use these field bits:
 | 0-3 | Motor 0-3 | `pwm:i16` |
 | 4-7 | Servo 4-7 | `degrees:u8` |
 | 8 | DIO 0-7 | `presentMask:u8`, `valueMask:u8` |
+| 15 | Device name | `length:u8`, followed by `length` printable ASCII bytes |
 
 Status packets sent by the XRP use these field bits:
 
@@ -108,7 +109,7 @@ Status packets sent by the XRP use these field bits:
 | 7-9 | Analog 0-2 | `value:u16` |
 | 10 | Timing | `lastControlSeq:u16`, `controlRxAge10Us:u16` |
 
-Motor `pwm` values are clamped to `-255` to `255`, which maps directly to the XRP motor PWM magnitude plus direction. Servo `degrees` values are clamped to `0` to `180`, matching the integer degree value applied by the XRP servo library. DIO payload bits are channel-indexed; bit `n` in `presentMask` means DIO channel `n` is included, and bit `n` in `valueMask` is that channel's value. XRP status currently reports DIO 0, the user button. Analog values are scaled over `0` to `5 V`, where `0` is `0 V` and `65535` is `5 V`.
+Motor `pwm` values are clamped to `-255` to `255`, which maps directly to the XRP motor PWM magnitude plus direction. Servo `degrees` values are clamped to `0` to `180`, matching the integer degree value applied by the XRP servo library. DIO payload bits are channel-indexed; bit `n` in `presentMask` means DIO channel `n` is included, and bit `n` in `valueMask` is that channel's value. A device name control packet must use only bit 15; its payload may contain either the full `WPIXRP-` name or just the suffix. The firmware validates the name, writes it to `/config.ini`, and reboots so the new Bluetooth advertisement name is applied. XRP status currently reports DIO 0, the user button. Analog values are scaled over `0` to `5 V`, where `0` is `0 V` and `65535` is `5 V`.
 
 Encoder period uses a fixed denominator of `1000000`; `periodNumerator >> 1` is the period in microseconds, and the low bit is the direction bit (`1` for forward, `0` for reverse). A `periodNumerator` of `0xffffffff` indicates no valid period.
 

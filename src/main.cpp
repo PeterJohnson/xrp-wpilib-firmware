@@ -28,6 +28,7 @@ const unsigned char* GetResource_VERSION(size_t* len);
 
 char BLUETOOTH_DEVICE_NAME[32];
 char CHIP_ID[20];
+char DEFAULT_BLUETOOTH_NAME_SUFFIX[20];
 
 char transportPacketBuf[bluetooth_transport::MAX_PACKET_SIZE];
 
@@ -44,6 +45,8 @@ unsigned long _loopTimeMeasurementCount = 0;
 uint32_t _statusPacketBuildCount = 0;
 uint32_t _statusPacketAcceptedCount = 0;
 uint32_t _statusPacketRejectedCount = 0;
+bool _restartRequested = false;
+unsigned long _restartAtMs = 0;
 unsigned long _lastStatusBuildMs = 0;
 unsigned long _lastStatusBuildIntervalMs = 0;
 unsigned long _maxStatusBuildIntervalMs = 0;
@@ -383,6 +386,36 @@ bool writeStatusToDiskSafely(const char* diagnosticsSnapshot) {
   return wroteStatus;
 }
 
+bool handleBluetoothDeviceNameRequest(const char* deviceName, size_t length) {
+  std::string requestedDeviceName(deviceName, length);
+  std::string deviceNameSuffix =
+      normalizeBluetoothDeviceNameSuffix(requestedDeviceName);
+  if (!isValidBluetoothDeviceNameSuffix(deviceNameSuffix)) {
+    Serial.println("[CONFIG] Rejected Bluetooth rename request");
+    return false;
+  }
+
+  if (!saveBluetoothDeviceName(deviceNameSuffix,
+                               DEFAULT_BLUETOOTH_NAME_SUFFIX)) {
+    Serial.println("[CONFIG] Failed to save Bluetooth rename request");
+    return false;
+  }
+
+  std::string bluetoothDeviceName =
+      buildBluetoothDeviceName(deviceNameSuffix);
+  strncpy(BLUETOOTH_DEVICE_NAME, bluetoothDeviceName.c_str(),
+          sizeof(BLUETOOTH_DEVICE_NAME) - 1);
+  BLUETOOTH_DEVICE_NAME[sizeof(BLUETOOTH_DEVICE_NAME) - 1] = '\0';
+  Serial.printf("[CONFIG] Bluetooth name changed to %s; rebooting\n",
+                BLUETOOTH_DEVICE_NAME);
+
+  writeStatusToDiskSafely("bluetooth rename");
+  xrp::robotSetEnabled(false);
+  _restartRequested = true;
+  _restartAtMs = millis() + 500;
+  return true;
+}
+
 // ==================================================
 // Bluetooth Transport Functions
 // ==================================================
@@ -579,16 +612,16 @@ void setup() {
   pico_get_unique_board_id(&id_out);
   snprintf(CHIP_ID, sizeof(CHIP_ID), "%02x%02x-%02x%02x", id_out.id[4],
            id_out.id[5], id_out.id[6], id_out.id[7]);
-  char defaultBluetoothNameSuffix[20];
-  snprintf(defaultBluetoothNameSuffix, sizeof(defaultBluetoothNameSuffix), "%s",
-           CHIP_ID);
+  snprintf(DEFAULT_BLUETOOTH_NAME_SUFFIX,
+           sizeof(DEFAULT_BLUETOOTH_NAME_SUFFIX), "%s", CHIP_ID);
 
-  XRPConfiguration config = loadConfiguration(defaultBluetoothNameSuffix);
+  XRPConfiguration config = loadConfiguration(DEFAULT_BLUETOOTH_NAME_SUFFIX);
   std::string bluetoothDeviceName =
       buildBluetoothDeviceName(config.bluetoothConfig.deviceNameSuffix);
   strncpy(BLUETOOTH_DEVICE_NAME, bluetoothDeviceName.c_str(),
           sizeof(BLUETOOTH_DEVICE_NAME) - 1);
   BLUETOOTH_DEVICE_NAME[sizeof(BLUETOOTH_DEVICE_NAME) - 1] = '\0';
+  wpilibudp::setDeviceNameHandler(handleBluetoothDeviceNameRequest);
 
   // MUST BE BEFORE imuCalibrate (has digitalWrites) and Bluetooth startup
   xrp::robotInit();
@@ -630,6 +663,11 @@ void loop() {
   while (bluetooth_transport::readPacket(
       transportPacketBuf, sizeof(transportPacketBuf), &packetSize)) {
     wpilibudp::processPacket(transportPacketBuf, static_cast<int>(packetSize));
+  }
+
+  if (_restartRequested &&
+      static_cast<long>(millis() - _restartAtMs) >= 0) {
+    rp2040.restart();
   }
 
   xrp::imuPeriodic();

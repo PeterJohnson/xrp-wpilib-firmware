@@ -17,6 +17,7 @@ uint16_t currMaxSeq = 0;
 uint32_t lastControlPacketMicros = 0;
 uint8_t lastControlByte = 0;
 bool receivedControlPacket = false;
+DeviceNameHandler deviceNameHandler = nullptr;
 xrp::Watchdog _dsWatchdog{"status"};
 
 bool hasField(uint16_t mask, uint16_t field) { return (mask & field) != 0; }
@@ -102,7 +103,47 @@ uint16_t encodeControlRxAge10Us() {
   return static_cast<uint16_t>(age10Us);
 }
 
+bool acceptSequence(uint16_t seq) {
+  if (seq > currMaxSeq) {
+    currMaxSeq = seq;
+    return true;
+  }
+
+  if (SEQ_MAX - seq < SEQ_FUDGE_FACTOR) {
+    // Rollover
+    currMaxSeq = seq;
+    return true;
+  }
+
+  return false;
+}
+
+bool processDeviceNamePacket(char* buffer, int size, uint16_t seq) {
+  if (deviceNameHandler == nullptr ||
+      size < PACKET_HEADER_SIZE + static_cast<int>(sizeof(uint8_t))) {
+    return false;
+  }
+
+  uint8_t deviceNameLength =
+      static_cast<uint8_t>(buffer[PACKET_HEADER_SIZE]);
+  if (deviceNameLength == 0 ||
+      deviceNameLength > CONTROL_DEVICE_NAME_MAX_LENGTH ||
+      size != PACKET_HEADER_SIZE + 1 + deviceNameLength) {
+    return false;
+  }
+
+  if (!acceptSequence(seq)) {
+    return false;
+  }
+
+  return deviceNameHandler(&buffer[PACKET_HEADER_SIZE + 1], deviceNameLength);
+}
+
 bool dsWatchdogActive() { return _dsWatchdog.satisfied(); }
+
+void setDeviceNameHandler(DeviceNameHandler handler) {
+  deviceNameHandler = handler;
+}
 
 void resetState() {
   currMaxSeq = 0;
@@ -125,22 +166,23 @@ bool processPacket(char* buffer, int size) {
   uint16_t seq = networkToUInt16(buffer);
   uint8_t ctrl = buffer[2];
   uint16_t fieldMask = networkToUInt16(buffer, 3);
-  if ((fieldMask & ~CONTROL_ALL_FIELDS) != 0 ||
+  if ((fieldMask & ~CONTROL_ALL_FIELDS) != 0) {
+    return false;
+  }
+
+  if (fieldMask == CONTROL_DEVICE_NAME) {
+    return processDeviceNamePacket(buffer, size, seq);
+  }
+
+  if (hasField(fieldMask, CONTROL_DEVICE_NAME) ||
       size != expectedControlPacketSize(fieldMask)) {
     return false;
   }
 
   // Check if the sequence number exceeds our latest seen seq number
-  if (seq > currMaxSeq) {
-    currMaxSeq = seq;
-  } else {
-    if (SEQ_MAX - seq < SEQ_FUDGE_FACTOR) {
-      // Rollover
-      currMaxSeq = seq;
-    } else {
-      // Not processing this
-      return false;
-    }
+  if (!acceptSequence(seq)) {
+    // Not processing this
+    return false;
   }
   lastControlPacketMicros = micros();
   lastControlByte = ctrl;

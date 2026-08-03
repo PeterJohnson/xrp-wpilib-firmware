@@ -8,8 +8,7 @@ namespace {
 constexpr const char* CONFIG_VERSION_KEY = "config_version";
 constexpr const char* CONFIG_VERSION_CAMEL_CASE_KEY = "configversion";
 constexpr const char* BLUETOOTH_SECTION = "bluetooth";
-constexpr const char* BLUETOOTH_DEVICE_NAME_KEY = "device_name";
-constexpr const char* BLUETOOTH_DEVICE_NAME_CAMEL_CASE_KEY = "devicename";
+constexpr const char* BLUETOOTH_DEVICE_NAME_KEY = "devicename";
 
 bool isAsciiWhitespace(char c) {
   return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' ||
@@ -46,6 +45,10 @@ std::string stripInlineComment(const std::string& line) {
 
   for (size_t i = 0; i < line.size(); i++) {
     char c = line[i];
+    if ((inSingleQuote || inDoubleQuote) && c == '\\') {
+      i++;
+      continue;
+    }
     if (c == '"' && !inSingleQuote) {
       inDoubleQuote = !inDoubleQuote;
     } else if (c == '\'' && !inDoubleQuote) {
@@ -75,7 +78,22 @@ bool unquoteIniValue(std::string* value, std::string* error,
     return false;
   }
 
-  *value = value->substr(1, value->size() - 2);
+  std::string unquoted;
+  for (size_t i = 1; i < value->size() - 1; i++) {
+    char c = (*value)[i];
+    if (c == '\\') {
+      i++;
+      if (i >= value->size() - 1) {
+        *error =
+            "line " + std::to_string(lineNumber) + ": unterminated escape";
+        return false;
+      }
+      c = (*value)[i];
+    }
+    unquoted.push_back(c);
+  }
+
+  *value = unquoted;
   return true;
 }
 
@@ -105,16 +123,29 @@ std::string readFileToString(File& f) {
   return contents;
 }
 
-void writeConfigToDisk(const XRPConfiguration& config,
+std::string quoteIniValue(const std::string& value) {
+  std::string quoted{"\""};
+  for (char c : value) {
+    if (c == '"' || c == '\\') {
+      quoted.push_back('\\');
+    }
+    quoted.push_back(c);
+  }
+  quoted.push_back('"');
+  return quoted;
+}
+
+bool writeConfigToDisk(const XRPConfiguration& config,
                        const std::string& defaultBluetoothNameSuffix) {
   File f = LittleFS.open(XRP_CONFIG_PATH, "w");
   if (!f) {
     Serial.println("[CONFIG] Failed to open config file for writing");
-    return;
+    return false;
   }
 
   f.print(config.toIniString(defaultBluetoothNameSuffix).c_str());
   f.close();
+  return true;
 }
 
 XRPConfiguration resetToDefaultConfig(
@@ -181,8 +212,7 @@ bool parseConfigIni(const std::string& contents,
             return false;
           }
         } else if (currentSection == BLUETOOTH_SECTION &&
-                   (key == BLUETOOTH_DEVICE_NAME_KEY ||
-                    key == BLUETOOTH_DEVICE_NAME_CAMEL_CASE_KEY)) {
+                   key == BLUETOOTH_DEVICE_NAME_KEY) {
           std::string configuredDeviceNameSuffix =
               normalizeBluetoothDeviceNameSuffix(value);
           if (isValidBluetoothDeviceNameSuffix(configuredDeviceNameSuffix)) {
@@ -282,11 +312,11 @@ std::string XRPConfiguration::toIniString(
   ret += defaultBluetoothDeviceName;
   ret += "\n";
   if (bluetoothDeviceName == defaultBluetoothDeviceName) {
-    ret += "# device_name = ";
+    ret += "# deviceName = ";
   } else {
-    ret += "device_name = ";
+    ret += "deviceName = ";
   }
-  ret += bluetoothDeviceName;
+  ret += quoteIniValue(bluetoothDeviceName);
   ret += "\n";
   return ret;
 }
@@ -318,4 +348,17 @@ XRPConfiguration loadConfiguration(
   }
 
   return config;
+}
+
+bool saveBluetoothDeviceName(const std::string& deviceNameOrSuffix,
+                             const std::string& defaultBluetoothNameSuffix) {
+  std::string deviceNameSuffix =
+      normalizeBluetoothDeviceNameSuffix(deviceNameOrSuffix);
+  if (!isValidBluetoothDeviceNameSuffix(deviceNameSuffix)) {
+    return false;
+  }
+
+  XRPConfiguration config = generateDefaultConfig(defaultBluetoothNameSuffix);
+  config.bluetoothConfig.deviceNameSuffix = deviceNameSuffix;
+  return writeConfigToDisk(config, defaultBluetoothNameSuffix);
 }

@@ -5,7 +5,7 @@
 #include <string>
 
 // Increment this whenever the persisted config schema changes.
-#define XRP_CONFIG_VERSION 3
+#define XRP_CONFIG_VERSION 2
 
 constexpr const char XRP_CONFIG_PATH[] = "/config.ini";
 
@@ -36,4 +36,6 @@ XRPConfiguration generateDefaultConfig(
     const std::string& defaultBluetoothNameSuffix);
 XRPConfiguration loadConfiguration(
     const std::string& defaultBluetoothNameSuffix);
+bool saveBluetoothDeviceName(const std::string& deviceNameOrSuffix,
+                             const std::string& defaultBluetoothNameSuffix);
 bool isValidBluetoothDeviceNameSuffix(const std::string& deviceNameSuffix);
