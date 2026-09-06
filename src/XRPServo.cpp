@@ -24,9 +24,7 @@ boolean XRPServo::init(int pin) {
 
 // Set the new servo position
 void XRPServo::setValue(double value) {
-  // Control packets carry whole degrees. Round after converting from PWM so
-  // floating-point error cannot turn a requested 1 degree into 0 degrees.
-  int val = static_cast<int>(((value + 1.0) / 2.0) * 180 + 0.5);
+  int val = ((value + 1.0) / 2.0) * 180;
 
   if(val != _value) {
     _value = val;

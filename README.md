@@ -2,7 +2,7 @@
 ## Introduction
 This repository contains a reference implementation of a [XRP robot](https://www.sparkfun.com/products/22230) that can be controlled via the WPILib XRP extension.
 
-The firmware implements the compact binary protocol documented below over Bluetooth LE. It exposes both a custom GATT service and an LE L2CAP Credit-Based Mode channel. A client must support this Bluetooth protocol; the UDP transport and tagged packets used by older XRP firmware are incompatible.
+The firmware implements a [custom binary protocol](https://github.com/wpilibsuite/allwpilib/tree/main/simulation/halsim_xrp) over Bluetooth LE. It advertises both a custom GATT service and an LE L2CAP Credit-Based Mode channel so clients can use the best packet transport available on each operating system.
 
 ## Documentation
 Official documentation for the XRP and how to use it with WPILib can be found on the [WPILib Docs site](https://docs.wpilib.org/en/latest/docs/xrp-robot/index.html). The documentation below is also reflected in the official WPILib documentation.
@@ -15,7 +15,7 @@ To install the latest firmware on your XRP, do the following:
 * Download the latest firmware UF2 file from Releases
 * Plug the XRP into your computer with a USB cable. You should see a red power LED that lights up.
 * While holding the BOOTSEL button (the white button on the green Pico W, near the USB connector), quickly press the reset button (middle left side of the XRP board), and then release the BOOTSEL button
-* The board will temporarily disconnect from your computer, and then reconnect as a USB storage device named "RPI-RP2"
+* The board will temporariloy disconnect from your computer, and then reconnect as a USB storage device named "RPI-RP2"
   * If this drive does not appear, you can also try unplugging the XRP from your computer, holding the BOOTSEL button down, reconnecting the XRP to your computer and then releasing the BOOTSEL button.
 * Drag the UF2 firmware file into the "RPI-RP2" drive, and it will automatically update the firmware
 * Once complete, the "RPI-RP2" device will disconnect, and the board should automatically reconnect as a serial device running the WPILib firmware
@@ -39,10 +39,8 @@ The configured Bluetooth name should appear in your operating system's Bluetooth
 
 The Bluetooth name can also be found by connecting the XRP to a computer, navigating to the PICODISK removable drive and opening the `XRP-Status.txt` file. This file also includes Bluetooth diagnostics such as the BTstack HCI state, local Bluetooth address, advertising data, scan response data, and decoded advertisement fields.
 
-The status file is a snapshot, refreshed only while Bluetooth is disconnected and the USB drive is unmounted. Live connection diagnostics are available on the USB serial port at 115200 baud. Deferring flash writes keeps them from interrupting control traffic.
-
 ### XRP Configuration
-The firmware stores its persistent configuration in `/config.ini` on LittleFS. It is a plain text INI file. PICODISK exposes only the status file, so editing the configuration requires separate LittleFS access; clients can also use the Bluetooth device name packet described below. If the file is missing, invalid, or uses an older schema version, the firmware rewrites it with the default Bluetooth configuration template on boot.
+The firmware stores its persistent configuration in `/config.ini` on LittleFS. It is a plain text INI file so it can be edited by hand in a text editor. If the file is missing, invalid, or uses an older schema version, the firmware rewrites it with the default Bluetooth configuration template on boot.
 
 The current configuration schema is version `2`:
 
@@ -83,8 +81,6 @@ The firmware exposes two packet transports:
 
 Each GATT write value, GATT notification value, or L2CAP SDU contains exactly one WPILib XRP protocol packet. There is no additional length prefix inside the Bluetooth payload.
 
-The firmware accepts one LE connection and one L2CAP packet channel at a time. GATT clients must subscribe to the status characteristic by writing `0x0001` to its Client Characteristic Configuration Descriptor (CCCD). Control writes do not enable notifications; writing `0x0000` to the CCCD disables them. Prepared writes and writes with nonzero offsets are unsupported.
-
 Each protocol packet starts with a 5-byte header:
 
 ```text
@@ -92,8 +88,6 @@ Each protocol packet starts with a 5-byte header:
 ```
 
 All multi-byte values are big-endian. The payload contains each field selected by `fieldMask`, emitted in ascending bit order. Packets with unknown field bits or payload sizes that do not exactly match the selected fields are ignored.
-
-Control sequences advance modulo 65536, including `65535` to `0`. Duplicate and stale packets are ignored; forward jumps must be smaller than 32768. Disconnects and the 500 ms control watchdog timeout reset sequence tracking and disable outputs. Status packets are produced every 20 ms; when transmission is busy, the latest status replaces any status still waiting to be handed to BTstack.
 
 Control packets sent to the XRP use these field bits:
 
@@ -115,19 +109,16 @@ Status packets sent by the XRP use these field bits:
 | 7-9 | Analog 0-2 | `value:u16` |
 | 10 | Timing | `lastControlSeq:u16`, `controlRxAge10Us:u16` |
 
-Motor `pwm` values are clamped to `-255` to `255`, which maps directly to the XRP motor PWM magnitude plus direction. Servo `degrees` values are clamped to `0` to `180`, matching the integer degree value applied by the XRP servo library. DIO payload bits are channel-indexed; bit `n` in `presentMask` means DIO channel `n` is included, and bit `n` in `valueMask` is that channel's value. XRP status currently reports DIO 0, the user button. Analog values are scaled over `0` to `5 V`, where `0` is `0 V` and `65535` is `5 V`.
-
-A device name control packet must use only bit 15; its payload may contain either the full `WPIXRP-` name or just the suffix. The firmware validates the name, disables outputs before saving `/config.ini`, and reboots after 500 ms if the save succeeds. Further control and rename packets are ignored while reboot is pending. A failed save preserves the previous configuration and does not schedule a reboot. Rename packets do not feed the control watchdog or update the timing echo.
+Motor `pwm` values are clamped to `-255` to `255`, which maps directly to the XRP motor PWM magnitude plus direction. Servo `degrees` values are clamped to `0` to `180`, matching the integer degree value applied by the XRP servo library. DIO payload bits are channel-indexed; bit `n` in `presentMask` means DIO channel `n` is included, and bit `n` in `valueMask` is that channel's value. A device name control packet must use only bit 15; its payload may contain either the full `WPIXRP-` name or just the suffix. The firmware validates the name, writes it to `/config.ini`, and reboots so the new Bluetooth advertisement name is applied. XRP status currently reports DIO 0, the user button. Analog values are scaled over `0` to `5 V`, where `0` is `0 V` and `65535` is `5 V`.
 
 Encoder period uses a fixed denominator of `1000000`; `periodNumerator >> 1` is the period in microseconds, and the low bit is the direction bit (`1` for forward, `0` for reverse). A `periodNumerator` of `0xffffffff` indicates no valid period.
 
-The XRP status `ctrl` byte is a copy of the most recent accepted control packet `ctrl` byte. The timing field's `lastControlSeq` echoes the most recent accepted control packet sequence number, and `controlRxAge10Us * 10` is the number of microseconds between processing that control packet in the main loop and producing the status packet. This age excludes time spent waiting in the receive queue. A `controlRxAge10Us` value of `0xffff` indicates no control packet has been accepted yet or the age exceeded the representable range. Clients can use this echo with their local control-packet send timestamps to estimate application-level round-trip latency.
+The XRP status `ctrl` byte is a copy of the most recent accepted control packet `ctrl` byte. The timing field's `lastControlSeq` echoes the most recent accepted control packet sequence number, and `controlRxAge10Us * 10` is the number of microseconds between receiving that control packet and producing the status packet. A `controlRxAge10Us` value of `0xffff` indicates no control packet has been accepted yet or the age exceeded the representable range. Clients can use this echo with their local control-packet send timestamps to estimate application-level round-trip latency.
 
-The firmware advertises preferred connection parameters of 7.5 ms minimum interval, 15 ms maximum interval, and latency 0. The central device ultimately decides the actual connection parameters. The largest current status packet is 85 bytes, so GATT clients need an ATT MTU of at least 88 bytes (including the 3-byte notification header). The default ATT MTU of 23 is insufficient. The firmware does not fragment packets across notifications.
+The firmware advertises preferred connection parameters of 7.5 ms minimum interval, 15 ms maximum interval, and latency 0. The central device ultimately decides the actual connection parameters. GATT clients should negotiate an ATT MTU large enough for the largest WPILib XRP packet they expect to receive; the firmware does not fragment packets across multiple notifications.
 
-### Development checks
-
-Run `pio run` to build both controller targets. After PlatformIO installs the framework, run `python3 test/run_native.py` for the host regression tests. See [test/README](test/README) for coverage and hardware checks.
+#### Note
+As of 10/13/2023, you MUST use the [2024 Beta 1 version](https://github.com/wpilibsuite/allwpilib/releases/tag/v2024.1.1-beta-1) (or later) of WPILib to write XRP programs. There are also examples and templates available (look for "XRP" in the examples/templates dropdown when creating a new project).
 
 ## Built-in IO Mapping
 

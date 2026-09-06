@@ -2,14 +2,14 @@
 
 #include <Arduino.h>
 #include <BTstackLib.h>
-#include <BluetoothLock.h>
+
 #include <stdint.h>
 #include <string.h>
 
 extern "C" {
 #include "ble/att_db_util.h"
-#include "ble/att_server.h"
 #include "bluetooth.h"
+#include "ble/att_server.h"
 #include "bluetooth_data_types.h"
 #include "btstack_event.h"
 #include "btstack_util.h"
@@ -38,9 +38,9 @@ struct PacketSlot {
 };
 
 PacketSlot rxQueue[RX_QUEUE_DEPTH];
-uint8_t rxWriteIndex = 0;
-uint8_t rxReadIndex = 0;
-bool rxOverflow = false;
+volatile uint8_t rxWriteIndex = 0;
+volatile uint8_t rxReadIndex = 0;
+volatile bool rxOverflow = false;
 uint32_t rxPacketsQueued = 0;
 uint32_t rxPacketsDropped = 0;
 uint8_t rxMaxQueueUsed = 0;
@@ -48,8 +48,6 @@ uint8_t rxMaxQueueUsed = 0;
 uint8_t l2capReceiveBuffer[MAX_PACKET_SIZE];
 hci_con_handle_t leConnectionHandle = HCI_CON_HANDLE_INVALID;
 uint16_t l2capChannelId = 0;
-uint16_t pendingL2capChannelId = 0;
-uint32_t connectionGeneration = 0;
 hci_con_handle_t l2capConnectionHandle = HCI_CON_HANDLE_INVALID;
 uint16_t l2capRemoteMtu = MAX_PACKET_SIZE;
 
@@ -60,20 +58,16 @@ uint16_t gattStatusCccHandle = 0;
 uint16_t gattPayloadMtu = DEFAULT_GATT_PAYLOAD_MTU;
 bool gattNotificationsEnabled = false;
 
-// BTstack borrows an L2CAP SDU until it finishes sending it. Keep that
-// storage separate from the pending status, which may be coalesced at any time.
-uint8_t l2capTxBuffer[MAX_PACKET_SIZE];
 uint8_t txBuffer[MAX_PACKET_SIZE];
 uint16_t txSize = 0;
 uint32_t txPendingSinceMicros = 0;
-bool txPending = false;
-bool l2capCanSendRequested = false;
-bool gattCanSendRequested = false;
+volatile bool txPending = false;
+volatile bool txCanSendRequested = false;
 Transport txTransport = Transport::TRANSPORT_NONE;
 Transport activeTransport = Transport::TRANSPORT_NONE;
 
 btstack_packet_callback_registration_t hciEventRegistration;
-att_service_handler_t gattServiceHandler{};
+btstack_packet_callback_registration_t l2capEventRegistration;
 btstack_context_callback_registration_t gattNotifyRegistration;
 AdvertisementDiagnostics advertisementInfo;
 ConnectionDiagnostics connectionInfo;
@@ -107,13 +101,10 @@ void clearRxQueue() {
   rxMaxQueueUsed = 0;
 }
 
-hci_con_handle_t effectiveGattHandle() {
-  return gattConnectionHandle != HCI_CON_HANDLE_INVALID ? gattConnectionHandle
-                                                        : leConnectionHandle;
-}
-
 uint16_t currentGattPayloadMtu() {
-  hci_con_handle_t handle = effectiveGattHandle();
+  hci_con_handle_t handle = gattConnectionHandle != HCI_CON_HANDLE_INVALID
+                                ? gattConnectionHandle
+                                : leConnectionHandle;
   if (handle != HCI_CON_HANDLE_INVALID) {
     uint16_t attMtu = att_server_get_mtu(handle);
     if (attMtu > 3) {
@@ -126,7 +117,7 @@ uint16_t currentGattPayloadMtu() {
 }
 
 void recordTxPendingDuration() {
-  if (!txPending) {
+  if (!txPending || txPendingSinceMicros == 0) {
     return;
   }
 
@@ -138,25 +129,24 @@ void recordTxPendingDuration() {
   }
 }
 
-bool txCanSendRequested() {
-  return (txTransport == Transport::TRANSPORT_L2CAP && l2capCanSendRequested) ||
-         (txTransport == Transport::TRANSPORT_GATT && gattCanSendRequested);
+void clearPendingTxFor(Transport transport) {
+  if (txPending && txTransport == transport) {
+    recordTxPendingDuration();
+    txPending = false;
+    txCanSendRequested = false;
+    txTransport = Transport::TRANSPORT_NONE;
+    txSize = 0;
+    txPendingSinceMicros = 0;
+  }
 }
 
 void finishPendingTx() {
   recordTxPendingDuration();
   txPending = false;
+  txCanSendRequested = false;
   txTransport = Transport::TRANSPORT_NONE;
   txSize = 0;
   txPendingSinceMicros = 0;
-  // Outstanding BTstack callbacks belong to their channel/connection, even
-  // when this particular packet is discarded or another transport is selected.
-}
-
-void clearPendingTxFor(Transport transport) {
-  if (txPending && txTransport == transport) {
-    finishPendingTx();
-  }
 }
 
 void recordConnectionParameters(uint16_t interval, uint16_t latency,
@@ -166,10 +156,8 @@ void recordConnectionParameters(uint16_t interval, uint16_t latency,
   connectionInfo.connectionSupervisionTimeout = supervisionTimeout;
 }
 
-bool queueIncomingPacket(const uint8_t* packet, uint16_t size,
-                         Transport transport) {
+bool queueIncomingPacket(const uint8_t* packet, uint16_t size, Transport transport) {
   if (size == 0 || size > MAX_PACKET_SIZE) {
-    ++rxPacketsDropped;
     return false;
   }
 
@@ -196,8 +184,6 @@ bool queueIncomingPacket(const uint8_t* packet, uint16_t size,
 
 void clearL2capConnection() {
   l2capChannelId = 0;
-  pendingL2capChannelId = 0;
-  l2capCanSendRequested = false;
   l2capConnectionHandle = HCI_CON_HANDLE_INVALID;
   l2capRemoteMtu = MAX_PACKET_SIZE;
   clearPendingTxFor(Transport::TRANSPORT_L2CAP);
@@ -208,7 +194,6 @@ void clearL2capConnection() {
 
 void clearGattConnection() {
   gattConnectionHandle = HCI_CON_HANDLE_INVALID;
-  gattCanSendRequested = false;
   gattNotificationsEnabled = false;
   gattPayloadMtu = DEFAULT_GATT_PAYLOAD_MTU;
   clearPendingTxFor(Transport::TRANSPORT_GATT);
@@ -222,20 +207,27 @@ bool canSendL2cap(size_t packetSize) {
 }
 
 bool canSendGatt(size_t packetSize) {
-  hci_con_handle_t handle = effectiveGattHandle();
-  return handle != HCI_CON_HANDLE_INVALID && gattNotificationsEnabled &&
-         packetSize <= currentGattPayloadMtu();
+  hci_con_handle_t handle = gattConnectionHandle != HCI_CON_HANDLE_INVALID
+                                ? gattConnectionHandle
+                                : leConnectionHandle;
+  return handle != HCI_CON_HANDLE_INVALID &&
+         gattNotificationsEnabled && packetSize <= currentGattPayloadMtu();
 }
 
 bool packetFitsTransport(Transport transport, size_t packetSize) {
-  switch (transport) {
-    case Transport::TRANSPORT_L2CAP:
-      return canSendL2cap(packetSize);
-    case Transport::TRANSPORT_GATT:
-      return canSendGatt(packetSize);
-    default:
-      return false;
+  if (transport == Transport::TRANSPORT_L2CAP) {
+    return l2capChannelId != 0 && packetSize <= l2capRemoteMtu;
   }
+
+  if (transport == Transport::TRANSPORT_GATT) {
+    hci_con_handle_t handle = gattConnectionHandle != HCI_CON_HANDLE_INVALID
+                                  ? gattConnectionHandle
+                                  : leConnectionHandle;
+    return handle != HCI_CON_HANDLE_INVALID &&
+           gattNotificationsEnabled && packetSize <= currentGattPayloadMtu();
+  }
+
+  return false;
 }
 
 Transport selectTxTransport(size_t packetSize) {
@@ -270,9 +262,9 @@ void addGapService(const char* deviceName) {
   att_db_util_add_service_uuid16(GAP_SERVICE_UUID);
   auto deviceNameBytes =
       const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(deviceName));
-  att_db_util_add_characteristic_uuid16(GAP_DEVICE_NAME_UUID, ATT_PROPERTY_READ,
-                                        ATT_SECURITY_NONE, ATT_SECURITY_NONE,
-                                        deviceNameBytes, strlen(deviceName));
+  att_db_util_add_characteristic_uuid16(
+      GAP_DEVICE_NAME_UUID, ATT_PROPERTY_READ, ATT_SECURITY_NONE,
+      ATT_SECURITY_NONE, deviceNameBytes, strlen(deviceName));
 
   little_endian_store_16(preferredConnectionParameters, 0,
                          PREFERRED_CONNECTION_INTERVAL_MIN);
@@ -305,8 +297,7 @@ void sendPendingL2capPacket() {
     return;
   }
 
-  memcpy(l2capTxBuffer, txBuffer, txSize);
-  uint8_t result = l2cap_send(l2capChannelId, l2capTxBuffer, txSize);
+  uint8_t result = l2cap_send(l2capChannelId, txBuffer, txSize);
   connectionInfo.lastL2capSendResult = result;
   if (result == ERROR_CODE_SUCCESS) {
     ++connectionInfo.l2capPacketsSent;
@@ -318,13 +309,13 @@ void sendPendingL2capPacket() {
 }
 
 void handleL2capCanSendNow(uint16_t eventChannelId) {
+  txCanSendRequested = false;
   ++connectionInfo.l2capCanSendCallbacks;
 
   if (eventChannelId != l2capChannelId) {
     return;
   }
 
-  l2capCanSendRequested = false;
   sendPendingL2capPacket();
 }
 
@@ -333,9 +324,11 @@ void sendPendingGattNotification() {
     return;
   }
 
-  hci_con_handle_t handle = effectiveGattHandle();
-  if (handle == HCI_CON_HANDLE_INVALID || !gattNotificationsEnabled ||
-      txSize > currentGattPayloadMtu()) {
+  hci_con_handle_t handle = gattConnectionHandle != HCI_CON_HANDLE_INVALID
+                                ? gattConnectionHandle
+                                : leConnectionHandle;
+  if (handle == HCI_CON_HANDLE_INVALID ||
+      !gattNotificationsEnabled || txSize > currentGattPayloadMtu()) {
     ++connectionInfo.gattNotificationDrops;
     finishPendingTx();
     return;
@@ -354,61 +347,69 @@ void sendPendingGattNotification() {
 }
 
 void handleGattCanSendNow(void* context) {
+  (void)context;
+  txCanSendRequested = false;
   ++connectionInfo.gattNotificationCallbacks;
-  auto handle =
-      static_cast<hci_con_handle_t>(reinterpret_cast<uintptr_t>(context));
-  if (handle != effectiveGattHandle()) {
-    return;
-  }
-  gattCanSendRequested = false;
   sendPendingGattNotification();
 }
 
 void requestCanSend() {
-  if (!txPending || txCanSendRequested()) {
+  if (!txPending) {
     return;
   }
 
-  if (txTransport == Transport::TRANSPORT_L2CAP && l2capChannelId != 0) {
-    if (l2cap_can_send_packet_now(l2capChannelId)) {
-      ++connectionInfo.l2capImmediateSends;
-      sendPendingL2capPacket();
+  if (txTransport == Transport::TRANSPORT_L2CAP && l2capChannelId != 0 &&
+      l2cap_can_send_packet_now(l2capChannelId)) {
+    txCanSendRequested = false;
+    ++connectionInfo.l2capImmediateSends;
+    sendPendingL2capPacket();
+    return;
+  }
+
+  hci_con_handle_t gattHandle =
+      gattConnectionHandle != HCI_CON_HANDLE_INVALID ? gattConnectionHandle
+                                                     : leConnectionHandle;
+  if (txTransport == Transport::TRANSPORT_GATT &&
+      gattHandle != HCI_CON_HANDLE_INVALID &&
+      gattNotificationsEnabled &&
+      att_server_can_send_packet_now(gattHandle)) {
+    txCanSendRequested = false;
+    ++connectionInfo.gattNotificationImmediateSends;
+    sendPendingGattNotification();
+    return;
+  }
+
+  if (txCanSendRequested) {
+    return;
+  }
+
+  if (txTransport == Transport::TRANSPORT_L2CAP) {
+    if (l2capChannelId == 0) {
       return;
     }
 
-    // Both request APIs may invoke their callback before returning.
-    l2capCanSendRequested = true;
-    ++connectionInfo.l2capCanSendRequests;
     uint8_t result = l2cap_request_can_send_now_event(l2capChannelId);
-    if (result != ERROR_CODE_SUCCESS) {
-      l2capCanSendRequested = false;
-      connectionInfo.lastL2capSendResult = result;
-      ++connectionInfo.l2capSendDrops;
-      finishPendingTx();
-    }
+    ++connectionInfo.l2capCanSendRequests;
+    txCanSendRequested =
+        result == ERROR_CODE_SUCCESS || result == ERROR_CODE_COMMAND_DISALLOWED;
     return;
   }
 
-  hci_con_handle_t handle = effectiveGattHandle();
-  if (txTransport == Transport::TRANSPORT_GATT &&
-      handle != HCI_CON_HANDLE_INVALID && gattNotificationsEnabled) {
-    if (att_server_can_send_packet_now(handle)) {
-      ++connectionInfo.gattNotificationImmediateSends;
-      sendPendingGattNotification();
+  if (txTransport == Transport::TRANSPORT_GATT) {
+    if (gattHandle == HCI_CON_HANDLE_INVALID || !gattNotificationsEnabled) {
       return;
     }
 
     gattNotifyRegistration.callback = &handleGattCanSendNow;
-    gattNotifyRegistration.context =
-        reinterpret_cast<void*>(static_cast<uintptr_t>(handle));
-    gattCanSendRequested = true;
-    ++connectionInfo.gattNotificationRequests;
+    gattNotifyRegistration.context = nullptr;
     uint8_t result = att_server_request_to_send_notification(
-        &gattNotifyRegistration, handle);
+        &gattNotifyRegistration, gattHandle);
     connectionInfo.lastGattNotifyRequestResult = result;
+    ++connectionInfo.gattNotificationRequests;
+    txCanSendRequested =
+        result == ERROR_CODE_SUCCESS || result == ERROR_CODE_COMMAND_DISALLOWED;
     if (result != ERROR_CODE_SUCCESS &&
         result != ERROR_CODE_COMMAND_DISALLOWED) {
-      gattCanSendRequested = false;
       Serial.printf("[BT] GATT notification request failed: 0x%02x\n", result);
       ++connectionInfo.gattNotificationDrops;
       finishPendingTx();
@@ -430,8 +431,7 @@ bool appendAdField(uint8_t* data, uint8_t& pos, uint8_t type,
   return true;
 }
 
-void configureAdvertisement(const char* deviceName,
-                            bool appliedAfterHciWorking) {
+void configureAdvertisement(const char* deviceName, bool appliedAfterHciWorking) {
   AdvertisementDiagnostics diagnostics;
   diagnostics.appliedAfterHciWorking = appliedAfterHciWorking;
   size_t deviceNameLength = strlen(deviceName);
@@ -445,9 +445,10 @@ void configureAdvertisement(const char* deviceName,
                      &flags, sizeof(flags));
 
   uint8_t primaryNameMaxLength = static_cast<uint8_t>(31 - advPos - 2);
-  uint8_t primaryNameLength = static_cast<uint8_t>(
-      deviceNameLength > primaryNameMaxLength ? primaryNameMaxLength
-                                              : deviceNameLength);
+  uint8_t primaryNameLength =
+      static_cast<uint8_t>(deviceNameLength > primaryNameMaxLength
+                               ? primaryNameMaxLength
+                               : deviceNameLength);
   uint8_t primaryNameType = primaryNameLength == deviceNameLength
                                 ? BLUETOOTH_DATA_TYPE_COMPLETE_LOCAL_NAME
                                 : BLUETOOTH_DATA_TYPE_SHORTENED_LOCAL_NAME;
@@ -473,10 +474,10 @@ void configureAdvertisement(const char* deviceName,
   uint8_t intervalRange[4];
   little_endian_store_16(intervalRange, 0, PREFERRED_CONNECTION_INTERVAL_MIN);
   little_endian_store_16(intervalRange, 2, PREFERRED_CONNECTION_INTERVAL_MAX);
-  diagnostics.scanResponseDataOverflow |=
-      !appendAdField(scanResponseDataBuffer, scanPos,
-                     BLUETOOTH_DATA_TYPE_SLAVE_CONNECTION_INTERVAL_RANGE,
-                     intervalRange, sizeof(intervalRange));
+  diagnostics.scanResponseDataOverflow |= !appendAdField(
+      scanResponseDataBuffer, scanPos,
+      BLUETOOTH_DATA_TYPE_SLAVE_CONNECTION_INTERVAL_RANGE, intervalRange,
+      sizeof(intervalRange));
 
   BTstack.setScanData(scanPos, scanResponseDataBuffer);
   diagnostics.scanResponseDataLength = scanPos;
@@ -494,8 +495,8 @@ void startAdvertising(const char* reason) {
 
 void restartAdvertisingIfIdle(const char* reason) {
   if (hci_get_state() != HCI_STATE_WORKING ||
-      leConnectionHandle != HCI_CON_HANDLE_INVALID || l2capChannelId != 0 ||
-      gattConnectionHandle != HCI_CON_HANDLE_INVALID) {
+      leConnectionHandle != HCI_CON_HANDLE_INVALID ||
+      l2capChannelId != 0 || gattConnectionHandle != HCI_CON_HANDLE_INVALID) {
     return;
   }
 
@@ -507,8 +508,8 @@ void disconnectHandle(hci_con_handle_t handle, const char* reason) {
     return;
   }
 
-  Serial.printf("[BT] Disconnecting LE link handle=0x%04x (%s)\n", handle,
-                reason);
+  Serial.printf("[BT] Disconnecting LE link handle=0x%04x (%s)\n",
+                handle, reason);
   uint8_t result = gap_disconnect(handle);
   if (result != ERROR_CODE_SUCCESS && result != ERROR_CODE_COMMAND_DISALLOWED) {
     Serial.printf("[BT] LE disconnect request failed: 0x%02x\n", result);
@@ -539,10 +540,9 @@ void handleLeConnected(hci_con_handle_t handle, uint16_t interval,
                        const char* eventName) {
   if (isForeignLeHandle(handle)) {
     ++connectionInfo.rejectedLeConnections;
-    Serial.printf(
-        "[BT] Rejecting extra LE connection handle=0x%04x "
-        "active=0x%04x\n",
-        handle, leConnectionHandle);
+    Serial.printf("[BT] Rejecting extra LE connection handle=0x%04x "
+                  "active=0x%04x\n",
+                  handle, leConnectionHandle);
     disconnectHandle(handle, "busy");
     return;
   }
@@ -555,7 +555,6 @@ void handleLeConnected(hci_con_handle_t handle, uint16_t interval,
   }
 
   leConnectionHandle = handle;
-  ++connectionGeneration;
   recordConnectionParameters(interval, latency, supervisionTimeout);
   clearL2capConnection();
   clearGattConnection();
@@ -563,66 +562,55 @@ void handleLeConnected(hci_con_handle_t handle, uint16_t interval,
   Serial.printf("[BT] LE connected handle=0x%04x (%s)\n", handle, eventName);
 }
 
-uint16_t handleGattRead(hci_con_handle_t handle, uint16_t attributeHandle,
-                        uint16_t offset, uint8_t* buffer, uint16_t bufferSize) {
-  if (handle != effectiveGattHandle() ||
-      attributeHandle != gattStatusCccHandle) {
+uint16_t handleGattRead(uint16_t characteristicId, uint8_t* buffer,
+                        uint16_t bufferSize) {
+  if (characteristicId != gattStatusCccHandle) {
     return 0;
   }
 
   uint8_t configuration[2];
   little_endian_store_16(configuration, 0, gattNotificationConfiguration());
-  return att_read_callback_handle_blob(configuration, sizeof(configuration),
-                                       offset, buffer, bufferSize);
+  if (buffer == nullptr) {
+    return sizeof(configuration);
+  }
+
+  uint16_t bytesToCopy = bufferSize < sizeof(configuration) ? bufferSize
+                                                            : sizeof(configuration);
+  memcpy(buffer, configuration, bytesToCopy);
+  return bytesToCopy;
 }
 
-int handleGattWrite(hci_con_handle_t handle, uint16_t attributeHandle,
-                    uint16_t transactionMode, uint16_t offset, uint8_t* buffer,
+int handleGattWrite(uint16_t characteristicId, uint8_t* buffer,
                     uint16_t bufferSize) {
-  if (handle == HCI_CON_HANDLE_INVALID || handle != effectiveGattHandle()) {
-    return ATT_ERROR_WRITE_NOT_PERMITTED;
-  }
-  // Each control write is a complete packet. Prepared/offset writes would
-  // otherwise apply fragments before a transaction was committed.
-  if (transactionMode != ATT_TRANSACTION_MODE_NONE) {
-    return ATT_ERROR_REQUEST_NOT_SUPPORTED;
-  }
-  if (offset != 0) {
-    return ATT_ERROR_INVALID_OFFSET;
-  }
-
-  if (attributeHandle == gattControlValueHandle) {
+  if (characteristicId == gattControlValueHandle) {
     ++connectionInfo.gattControlPacketsReceived;
-    if (bufferSize == 0 || bufferSize > MAX_PACKET_SIZE) {
-      return ATT_ERROR_INVALID_ATTRIBUTE_VALUE_LENGTH;
+    if (!gattNotificationsEnabled) {
+      gattNotificationsEnabled = true;
+      Serial.println("[BT] GATT status notifications enabled by control traffic");
     }
     queueIncomingPacket(buffer, bufferSize, Transport::TRANSPORT_GATT);
+    requestCanSend();
     return 0;
   }
 
-  if (attributeHandle == gattStatusCccHandle) {
-    if (bufferSize != 2) {
-      return ATT_ERROR_INVALID_ATTRIBUTE_VALUE_LENGTH;
-    }
-    uint16_t configuration = little_endian_read_16(buffer, 0);
-    if (configuration != 0 &&
-        configuration !=
-            GATT_CLIENT_CHARACTERISTICS_CONFIGURATION_NOTIFICATION) {
-      return ATT_ERROR_VALUE_NOT_ALLOWED;
-    }
-    ++connectionInfo.gattCccdWrites;
-    gattNotificationsEnabled = configuration != 0;
-    Serial.printf("[BT] GATT status notifications %s\n",
-                  gattNotificationsEnabled ? "enabled" : "disabled");
-    if (!gattNotificationsEnabled) {
-      clearPendingTxFor(Transport::TRANSPORT_GATT);
-    } else {
-      requestCanSend();
+  if (characteristicId == gattStatusCccHandle) {
+    if (bufferSize >= 2) {
+      ++connectionInfo.gattCccdWrites;
+      uint16_t configuration = little_endian_read_16(buffer, 0);
+      gattNotificationsEnabled =
+          (configuration & GATT_CLIENT_CHARACTERISTICS_CONFIGURATION_NOTIFICATION) != 0;
+      Serial.printf("[BT] GATT status notifications %s\n",
+                    gattNotificationsEnabled ? "enabled" : "disabled");
+      if (!gattNotificationsEnabled) {
+        clearPendingTxFor(Transport::TRANSPORT_GATT);
+      } else {
+        requestCanSend();
+      }
     }
     return 0;
   }
 
-  return ATT_ERROR_WRITE_NOT_PERMITTED;
+  return 0;
 }
 
 void addGattService() {
@@ -637,12 +625,8 @@ void addGattService() {
       BTstack.addGATTCharacteristicDynamic(&statusUuid, ATT_PROPERTY_NOTIFY, 0);
   gattStatusCccHandle = gattStatusValueHandle + 1;
 
-  // The Arduino wrapper discards connection handles, offsets, transaction
-  // modes, and write errors. Register the native ATT callbacks after setup().
-  gattServiceHandler.start_handle = gattControlValueHandle;
-  gattServiceHandler.end_handle = gattStatusCccHandle;
-  gattServiceHandler.read_callback = &handleGattRead;
-  gattServiceHandler.write_callback = &handleGattWrite;
+  BTstack.setGATTCharacteristicRead(&handleGattRead);
+  BTstack.setGATTCharacteristicWrite(&handleGattWrite);
 }
 
 void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
@@ -662,9 +646,9 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
           uint8_t reason = hci_event_disconnection_complete_get_reason(packet);
           Serial.printf("[BT] LE disconnected handle=0x%04x reason=0x%02x\n",
                         handle, reason);
+          connectionInfo.lastDisconnectReason = reason;
+
           if (handle == leConnectionHandle) {
-            connectionInfo.lastDisconnectReason = reason;
-            ++connectionGeneration;
             leConnectionHandle = HCI_CON_HANDLE_INVALID;
             recordConnectionParameters(0, 0, 0);
             clearL2capConnection();
@@ -733,10 +717,8 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
               break;
 
             case HCI_SUBEVENT_LE_CONNECTION_UPDATE_COMPLETE:
-              if (hci_subevent_le_connection_update_complete_get_status(
-                      packet) == ERROR_CODE_SUCCESS &&
-                  hci_subevent_le_connection_update_complete_get_connection_handle(
-                      packet) == leConnectionHandle) {
+              if (hci_subevent_le_connection_update_complete_get_status(packet) ==
+                  ERROR_CODE_SUCCESS) {
                 recordConnectionParameters(
                     hci_subevent_le_connection_update_complete_get_conn_interval(
                         packet),
@@ -745,10 +727,9 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
                     hci_subevent_le_connection_update_complete_get_supervision_timeout(
                         packet));
                 ++connectionInfo.connectionUpdates;
-                Serial.printf(
-                    "[BT] Connection interval now %u units, latency %u\n",
-                    connectionInfo.connectionInterval,
-                    connectionInfo.connectionLatency);
+                Serial.printf("[BT] Connection interval now %u units, latency %u\n",
+                              connectionInfo.connectionInterval,
+                              connectionInfo.connectionLatency);
               }
               break;
 
@@ -761,18 +742,15 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
           hci_con_handle_t handle = att_event_connected_get_handle(packet);
           if (isForeignLeHandle(handle) || isForeignGattHandle(handle)) {
             ++connectionInfo.rejectedGattConnections;
-            Serial.printf(
-                "[BT] Rejecting extra GATT connection handle=0x%04x "
-                "active_le=0x%04x active_gatt=0x%04x\n",
-                handle, leConnectionHandle, gattConnectionHandle);
+            Serial.printf("[BT] Rejecting extra GATT connection handle=0x%04x "
+                          "active_le=0x%04x active_gatt=0x%04x\n",
+                          handle, leConnectionHandle, gattConnectionHandle);
             disconnectHandle(handle, "busy GATT");
             break;
           }
 
-          if (leConnectionHandle == HCI_CON_HANDLE_INVALID) {
-            handleLeConnected(handle, 0, 0, 0, "ATT connected");
-          }
           gattConnectionHandle = handle;
+          leConnectionHandle = gattConnectionHandle;
           updateGattPayloadMtu(att_server_get_mtu(gattConnectionHandle));
           Serial.printf("[BT] GATT connected handle=0x%04x mtu_payload=%u\n",
                         gattConnectionHandle, currentGattPayloadMtu());
@@ -793,10 +771,8 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
           hci_con_handle_t handle =
               att_event_mtu_exchange_complete_get_handle(packet);
           if (handle == gattConnectionHandle) {
-            updateGattPayloadMtu(
-                att_event_mtu_exchange_complete_get_MTU(packet));
-            Serial.printf("[BT] GATT MTU payload=%u\n",
-                          currentGattPayloadMtu());
+            updateGattPayloadMtu(att_event_mtu_exchange_complete_get_MTU(packet));
+            Serial.printf("[BT] GATT MTU payload=%u\n", currentGattPayloadMtu());
           }
           break;
         }
@@ -813,40 +789,29 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
 
           if (isForeignLeHandle(handle)) {
             ++connectionInfo.rejectedL2capConnections;
-            Serial.printf(
-                "[BT] Declining L2CAP CBM connection from extra LE "
-                "handle=0x%04x active=0x%04x cid=0x%04x\n",
-                handle, leConnectionHandle, localCid);
+            Serial.printf("[BT] Declining L2CAP CBM connection from extra LE "
+                          "handle=0x%04x active=0x%04x cid=0x%04x\n",
+                          handle, leConnectionHandle, localCid);
             l2cap_cbm_decline_connection(
                 localCid, L2CAP_CBM_CONNECTION_RESULT_NO_RESOURCES_AVAILABLE);
             disconnectHandle(handle, "busy L2CAP");
             break;
           }
 
-          if (l2capChannelId != 0 || pendingL2capChannelId != 0) {
+          if (l2capChannelId != 0) {
             ++connectionInfo.rejectedL2capConnections;
-            Serial.printf(
-                "[BT] Declining extra L2CAP CBM connection cid=0x%04x "
-                "active=0x%04x\n",
-                localCid, l2capChannelId);
+            Serial.printf("[BT] Declining extra L2CAP CBM connection cid=0x%04x "
+                          "active=0x%04x\n",
+                          localCid, l2capChannelId);
             l2cap_cbm_decline_connection(
                 localCid, L2CAP_CBM_CONNECTION_RESULT_NO_RESOURCES_AVAILABLE);
             break;
           }
 
-          Serial.printf(
-              "[BT] Accepting L2CAP CBM connection cid=0x%04x psm=0x%04x\n",
-              localCid, psm);
-          // Reserve our single receive buffer before accept: opening may be
-          // deferred, or may complete synchronously inside this call.
-          pendingL2capChannelId = localCid;
-          uint8_t result = l2cap_cbm_accept_connection(
-              localCid, l2capReceiveBuffer, sizeof(l2capReceiveBuffer),
-              INITIAL_CREDITS);
-          if (result != ERROR_CODE_SUCCESS) {
-            pendingL2capChannelId = 0;
-            Serial.printf("[BT] L2CAP accept failed: 0x%02x\n", result);
-          }
+          Serial.printf("[BT] Accepting L2CAP CBM connection cid=0x%04x psm=0x%04x\n",
+                        localCid, psm);
+          l2cap_cbm_accept_connection(localCid, l2capReceiveBuffer,
+                                      sizeof(l2capReceiveBuffer), INITIAL_CREDITS);
           break;
         }
 
@@ -856,12 +821,9 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
               l2cap_event_cbm_channel_opened_get_handle(packet);
           uint16_t localCid =
               l2cap_event_cbm_channel_opened_get_local_cid(packet);
-          if (localCid == pendingL2capChannelId) {
-            pendingL2capChannelId = 0;
-          }
           if (status != ERROR_CODE_SUCCESS) {
             Serial.printf("[BT] L2CAP CBM open failed: 0x%02x\n", status);
-            if (localCid == l2capChannelId) {
+            if (l2capChannelId == 0 || localCid == l2capChannelId) {
               clearL2capConnection();
             }
             break;
@@ -869,10 +831,9 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
 
           if (isForeignLeHandle(handle)) {
             ++connectionInfo.rejectedL2capConnections;
-            Serial.printf(
-                "[BT] Closing L2CAP channel from extra LE handle=0x%04x "
-                "active=0x%04x cid=0x%04x\n",
-                handle, leConnectionHandle, localCid);
+            Serial.printf("[BT] Closing L2CAP channel from extra LE handle=0x%04x "
+                          "active=0x%04x cid=0x%04x\n",
+                          handle, leConnectionHandle, localCid);
             l2cap_disconnect(localCid);
             disconnectHandle(handle, "busy L2CAP open");
             break;
@@ -880,10 +841,9 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
 
           if (l2capChannelId != 0 && localCid != l2capChannelId) {
             ++connectionInfo.rejectedL2capConnections;
-            Serial.printf(
-                "[BT] Closing extra L2CAP channel cid=0x%04x "
-                "active=0x%04x\n",
-                localCid, l2capChannelId);
+            Serial.printf("[BT] Closing extra L2CAP channel cid=0x%04x "
+                          "active=0x%04x\n",
+                          localCid, l2capChannelId);
             l2cap_disconnect(localCid);
             break;
           }
@@ -894,23 +854,17 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
           l2capRemoteMtu =
               l2cap_event_cbm_channel_opened_get_remote_mtu(packet);
 
-          Serial.printf(
-              "[BT] L2CAP CBM channel open cid=0x%04x remote_mtu=%u\n",
-              l2capChannelId, l2capRemoteMtu);
+          Serial.printf("[BT] L2CAP CBM channel open cid=0x%04x remote_mtu=%u\n",
+                        l2capChannelId, l2capRemoteMtu);
           requestCanSend();
           break;
         }
 
         case L2CAP_EVENT_CHANNEL_CLOSED: {
           uint16_t closedCid = l2cap_event_channel_closed_get_local_cid(packet);
-          if (closedCid == pendingL2capChannelId) {
-            pendingL2capChannelId = 0;
-          }
           bool wasPacketChannel = closedCid == l2capChannelId;
           Serial.printf("[BT] L2CAP channel closed cid=0x%04x\n", closedCid);
           if (wasPacketChannel) {
-            ++connectionGeneration;
-            clearRxQueue();
             clearL2capConnection();
             if (!gattNotificationsEnabled) {
               disconnectLeConnection("L2CAP close");
@@ -944,7 +898,6 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
 }  // namespace
 
 void begin(const char* deviceName) {
-  BluetoothLock lock;
   leConnectionHandle = HCI_CON_HANDLE_INVALID;
   clearL2capConnection();
   clearGattConnection();
@@ -957,17 +910,18 @@ void begin(const char* deviceName) {
   addGapService(deviceName);
   addGattService();
   BTstack.setup(deviceName);
-  att_server_register_service_handler(&gattServiceHandler);
 
   hciEventRegistration.callback = &packetHandler;
   hci_add_event_handler(&hciEventRegistration);
 
   att_server_register_packet_handler(&packetHandler);
 
+  l2capEventRegistration.callback = &packetHandler;
+  l2cap_add_event_handler(&l2capEventRegistration);
+
   uint8_t result = l2cap_cbm_register_service(&packetHandler, LE_PSM, LEVEL_0);
   if (result != ERROR_CODE_SUCCESS) {
-    Serial.printf("[BT] Failed to register L2CAP CBM service: 0x%02x\n",
-                  result);
+    Serial.printf("[BT] Failed to register L2CAP CBM service: 0x%02x\n", result);
   }
 
   startAdvertising("startup");
@@ -976,22 +930,22 @@ void begin(const char* deviceName) {
                 deviceName, GATT_SERVICE_UUID, LE_PSM);
 }
 
-AdvertisementDiagnostics advertisementDiagnostics() {
-  BluetoothLock lock;
+const AdvertisementDiagnostics& advertisementDiagnostics() {
   return advertisementInfo;
 }
 
-ConnectionDiagnostics connectionDiagnostics() {
-  BluetoothLock lock;
-  hci_con_handle_t gattHandle = effectiveGattHandle();
+const ConnectionDiagnostics& connectionDiagnostics() {
+  hci_con_handle_t effectiveGattHandle =
+      gattConnectionHandle != HCI_CON_HANDLE_INVALID ? gattConnectionHandle
+                                                     : leConnectionHandle;
   connectionInfo.leConnected = leConnectionHandle != HCI_CON_HANDLE_INVALID;
   connectionInfo.l2capConnected = l2capChannelId != 0;
-  connectionInfo.gattConnected = gattHandle != HCI_CON_HANDLE_INVALID &&
-                                 (gattNotificationsEnabled ||
-                                  activeTransport == Transport::TRANSPORT_GATT);
+  connectionInfo.gattConnected =
+      effectiveGattHandle != HCI_CON_HANDLE_INVALID &&
+      (gattNotificationsEnabled || activeTransport == Transport::TRANSPORT_GATT);
   connectionInfo.gattNotificationsEnabled = gattNotificationsEnabled;
   connectionInfo.txPending = txPending;
-  connectionInfo.txCanSendRequested = txCanSendRequested();
+  connectionInfo.txCanSendRequested = txCanSendRequested;
   connectionInfo.rxOverflow = rxOverflow;
   connectionInfo.rxQueueDepth = RX_QUEUE_DEPTH - 1;
   connectionInfo.rxQueueUsed = rxQueueUsed();
@@ -999,7 +953,9 @@ ConnectionDiagnostics connectionDiagnostics() {
   connectionInfo.activeTransport = static_cast<uint8_t>(activeTransport);
   connectionInfo.txTransport = static_cast<uint8_t>(txTransport);
   connectionInfo.txPendingAgeUs =
-      txPending ? static_cast<uint32_t>(micros() - txPendingSinceMicros) : 0;
+      txPending && txPendingSinceMicros != 0
+          ? static_cast<uint32_t>(micros() - txPendingSinceMicros)
+          : 0;
   connectionInfo.leConnectionHandle = leConnectionHandle;
   connectionInfo.l2capChannelId = l2capChannelId;
   connectionInfo.l2capRemoteMtu = l2capRemoteMtu;
@@ -1007,7 +963,7 @@ ConnectionDiagnostics connectionDiagnostics() {
       l2capChannelId != 0 ? l2cap_cbm_available_credits(l2capChannelId) : 0;
   connectionInfo.l2capCanSendNow =
       l2capChannelId != 0 && l2cap_can_send_packet_now(l2capChannelId);
-  connectionInfo.gattConnectionHandle = gattHandle;
+  connectionInfo.gattConnectionHandle = effectiveGattHandle;
   connectionInfo.gattPayloadMtu = currentGattPayloadMtu();
   connectionInfo.gattControlValueHandle = gattControlValueHandle;
   connectionInfo.gattStatusValueHandle = gattStatusValueHandle;
@@ -1018,22 +974,18 @@ ConnectionDiagnostics connectionDiagnostics() {
 }
 
 bool connected() {
-  BluetoothLock lock;
-  return leConnectionHandle != HCI_CON_HANDLE_INVALID;
-}
-
-uint32_t connectionSession() {
-  BluetoothLock lock;
-  return connectionGeneration;
+  return l2capChannelId != 0 || gattConnectionHandle != HCI_CON_HANDLE_INVALID ||
+         (leConnectionHandle != HCI_CON_HANDLE_INVALID &&
+          (gattNotificationsEnabled ||
+           activeTransport == Transport::TRANSPORT_GATT));
 }
 
 unsigned hciState() {
-  BluetoothLock lock;
   return static_cast<unsigned>(hci_get_state());
 }
 
 const char* hciStateName() {
-  switch (hciState()) {
+  switch (hci_get_state()) {
     case HCI_STATE_OFF:
       return "OFF";
     case HCI_STATE_INITIALIZING:
@@ -1052,7 +1004,6 @@ const char* hciStateName() {
 }
 
 void localAddress(char* buffer, size_t bufferSize) {
-  BluetoothLock lock;
   if (bufferSize == 0) {
     return;
   }
@@ -1067,13 +1018,7 @@ void localAddress(char* buffer, size_t bufferSize) {
   snprintf(buffer, bufferSize, "%s", bd_addr_to_str(addr));
 }
 
-bool readPacket(char* buffer, size_t bufferSize, size_t* packetSize,
-                uint32_t* session) {
-  BluetoothLock lock;
-  *packetSize = 0;
-  if (session != nullptr) {
-    *session = connectionGeneration;
-  }
+bool readPacket(char* buffer, size_t bufferSize, size_t* packetSize) {
   if (rxReadIndex == rxWriteIndex) {
     return false;
   }
@@ -1081,7 +1026,6 @@ bool readPacket(char* buffer, size_t bufferSize, size_t* packetSize,
   PacketSlot& slot = rxQueue[rxReadIndex];
   if (slot.size > bufferSize) {
     rxReadIndex = nextQueueIndex(rxReadIndex);
-    ++rxPacketsDropped;
     return false;
   }
 
@@ -1093,11 +1037,10 @@ bool readPacket(char* buffer, size_t bufferSize, size_t* packetSize,
 }
 
 bool sendPacket(const char* buffer, size_t packetSize) {
-  BluetoothLock lock;
   ++connectionInfo.statusSendAttempts;
   connectionInfo.lastStatusPacketSize = packetSize;
 
-  if (buffer == nullptr || packetSize == 0 || packetSize > MAX_PACKET_SIZE) {
+  if (packetSize == 0 || packetSize > MAX_PACKET_SIZE) {
     ++connectionInfo.statusSendInvalidSizeDrops;
     return false;
   }
@@ -1118,7 +1061,9 @@ bool sendPacket(const char* buffer, size_t packetSize) {
 
   Transport transport = selectTxTransport(packetSize);
   if (transport == Transport::TRANSPORT_NONE) {
-    hci_con_handle_t gattHandle = effectiveGattHandle();
+    hci_con_handle_t gattHandle =
+        gattConnectionHandle != HCI_CON_HANDLE_INVALID ? gattConnectionHandle
+                                                       : leConnectionHandle;
     if (gattHandle != HCI_CON_HANDLE_INVALID || gattNotificationsEnabled ||
         activeTransport == Transport::TRANSPORT_GATT) {
       connectionInfo.lastGattStatusPacketSize = packetSize;
@@ -1137,6 +1082,7 @@ bool sendPacket(const char* buffer, size_t packetSize) {
   txPendingSinceMicros = micros();
   txTransport = transport;
   txPending = true;
+  txCanSendRequested = false;
   if (transport == Transport::TRANSPORT_GATT) {
     connectionInfo.lastGattStatusPacketSize = packetSize;
     ++connectionInfo.gattStatusPacketsQueued;
