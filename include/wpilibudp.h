@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace wpilibudp {
@@ -42,15 +43,15 @@ constexpr uint16_t STATUS_ANALOG_2 = 1u << 9;
 constexpr uint16_t STATUS_TIMING = 1u << 10;
 constexpr uint16_t STATUS_ALL_FIELDS =
     STATUS_ENCODER_0 | STATUS_ENCODER_1 | STATUS_ENCODER_2 | STATUS_ENCODER_3 |
-    STATUS_DIO | STATUS_GYRO | STATUS_ACCEL | STATUS_ANALOG_0 | STATUS_ANALOG_1 |
-    STATUS_ANALOG_2 | STATUS_TIMING;
+    STATUS_DIO | STATUS_GYRO | STATUS_ACCEL | STATUS_ANALOG_0 |
+    STATUS_ANALOG_1 | STATUS_ANALOG_2 | STATUS_TIMING;
 
 bool dsWatchdogActive();
 
 using DeviceNameHandler = bool (*)(const char* deviceName, size_t length);
 
 void setDeviceNameHandler(DeviceNameHandler handler);
-bool processPacket(char* buffer, int size);
+bool processPacket(const char* buffer, int size);
 void resetState();
 uint8_t lastControlByteReceived();
 
@@ -63,4 +64,4 @@ int writeGyroData(float rates[3], float angles[3], char* buffer,
 int writeAccelData(float accels[3], char* buffer, int offset = 0);
 int writeAnalogData(float voltage, char* buffer, int offset = 0);
 int writeTimingData(char* buffer, int offset = 0);
-} // namespace wpilibudp
+}  // namespace wpilibudp

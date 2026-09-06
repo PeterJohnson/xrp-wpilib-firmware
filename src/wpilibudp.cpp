@@ -1,21 +1,19 @@
+#include "wpilibudp.h"
+
 #include <Arduino.h>
 
 #include "byteutils.h"
-#include "wpilibudp.h"
 #include "robot.h"
 #include "watchdog.h"
-#include "imu.h"
-
-// Since we might (nay, will) rollover, the fudge factor lets us deal with cases
-// like 65532, 65533, 0, 65534, 65535 by taking 0 as the new highest seq number
-#define SEQ_FUDGE_FACTOR 5
-#define SEQ_MAX 65535
 
 namespace wpilibudp {
+namespace {
 
 uint16_t currMaxSeq = 0;
+uint16_t lastControlSeq = 0;
 uint32_t lastControlPacketMicros = 0;
 uint8_t lastControlByte = 0;
+bool receivedSequence = false;
 bool receivedControlPacket = false;
 DeviceNameHandler deviceNameHandler = nullptr;
 xrp::Watchdog _dsWatchdog{"status"};
@@ -40,7 +38,8 @@ uint8_t clampServoDegrees(uint8_t degrees) {
 }
 
 uint16_t voltageToAnalogValue(float voltage) {
-  if (voltage <= 0.0f) {
+  // Also map NaN to zero instead of converting it to an integer.
+  if (!(voltage > 0.0f)) {
     return 0;
   }
   if (voltage >= ANALOG_MAX_VOLTAGE) {
@@ -80,7 +79,8 @@ uint32_t normalizeEncoderPeriod(uint32_t period, uint32_t divisor) {
   uint32_t direction = period & 1u;
   uint32_t ticks = period >> 1;
   uint64_t periodUs =
-      (static_cast<uint64_t>(ticks) * ENCODER_PERIOD_DENOMINATOR + divisor / 2) /
+      (static_cast<uint64_t>(ticks) * ENCODER_PERIOD_DENOMINATOR +
+       divisor / 2) /
       divisor;
   if (periodUs > (UINT32_MAX >> 1)) {
     return UINT32_MAX;
@@ -103,43 +103,45 @@ uint16_t encodeControlRxAge10Us() {
   return static_cast<uint16_t>(age10Us);
 }
 
-bool acceptSequence(uint16_t seq) {
-  if (seq > currMaxSeq) {
-    currMaxSeq = seq;
-    return true;
-  }
-
-  if (SEQ_MAX - seq < SEQ_FUDGE_FACTOR) {
-    // Rollover
-    currMaxSeq = seq;
-    return true;
-  }
-
-  return false;
+bool isNewSequence(uint16_t seq) {
+  // Compare in the 16-bit sequence space, including rollover through zero.
+  // A jump of half the space or more is ambiguous and treated as stale.
+  uint16_t distance = static_cast<uint16_t>(seq - currMaxSeq);
+  return !receivedSequence || (distance != 0 && distance < 0x8000);
 }
 
-bool processDeviceNamePacket(char* buffer, int size, uint16_t seq) {
+void acceptSequence(uint16_t seq) {
+  currMaxSeq = seq;
+  receivedSequence = true;
+}
+
+bool processDeviceNamePacket(const char* buffer, int size, uint16_t seq) {
   if (deviceNameHandler == nullptr ||
       size < PACKET_HEADER_SIZE + static_cast<int>(sizeof(uint8_t))) {
     return false;
   }
 
-  uint8_t deviceNameLength =
-      static_cast<uint8_t>(buffer[PACKET_HEADER_SIZE]);
+  uint8_t deviceNameLength = static_cast<uint8_t>(buffer[PACKET_HEADER_SIZE]);
   if (deviceNameLength == 0 ||
       deviceNameLength > CONTROL_DEVICE_NAME_MAX_LENGTH ||
       size != PACKET_HEADER_SIZE + 1 + deviceNameLength) {
     return false;
   }
 
-  if (!acceptSequence(seq)) {
+  if (!isNewSequence(seq) ||
+      !deviceNameHandler(&buffer[PACKET_HEADER_SIZE + 1], deviceNameLength)) {
     return false;
   }
 
-  return deviceNameHandler(&buffer[PACKET_HEADER_SIZE + 1], deviceNameLength);
+  acceptSequence(seq);
+  return true;
 }
 
-bool dsWatchdogActive() { return _dsWatchdog.satisfied(); }
+}  // namespace
+
+bool dsWatchdogActive() {
+  return receivedControlPacket && _dsWatchdog.satisfied();
+}
 
 void setDeviceNameHandler(DeviceNameHandler handler) {
   deviceNameHandler = handler;
@@ -147,15 +149,17 @@ void setDeviceNameHandler(DeviceNameHandler handler) {
 
 void resetState() {
   currMaxSeq = 0;
+  lastControlSeq = 0;
   lastControlPacketMicros = 0;
   lastControlByte = 0;
   receivedControlPacket = false;
+  receivedSequence = false;
 }
 
 uint8_t lastControlByteReceived() { return lastControlByte; }
 
-bool processPacket(char* buffer, int size) {
-  if (size < PACKET_HEADER_SIZE) {
+bool processPacket(const char* buffer, int size) {
+  if (buffer == nullptr || size < PACKET_HEADER_SIZE) {
     return false;
   }
 
@@ -179,11 +183,11 @@ bool processPacket(char* buffer, int size) {
     return false;
   }
 
-  // Check if the sequence number exceeds our latest seen seq number
-  if (!acceptSequence(seq)) {
-    // Not processing this
+  if (!isNewSequence(seq)) {
     return false;
   }
+  acceptSequence(seq);
+  lastControlSeq = seq;
   lastControlPacketMicros = micros();
   lastControlByte = ctrl;
   receivedControlPacket = true;
@@ -284,10 +288,10 @@ int writeAnalogData(float voltage, char* buffer, int offset) {
 
 int writeTimingData(char* buffer, int offset) {
   // Timing data is lastControlSeq(2) + controlRxAge10Us(2).
-  uint16ToNetwork(currMaxSeq, buffer, offset);
+  uint16ToNetwork(lastControlSeq, buffer, offset);
   uint16ToNetwork(encodeControlRxAge10Us(), buffer, offset + 2);
 
   return 4;
 }
 
-} // namespace wpilibudp
+}  // namespace wpilibudp

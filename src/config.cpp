@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <limits.h>
 
 namespace {
 
@@ -84,11 +85,14 @@ bool unquoteIniValue(std::string* value, std::string* error,
     if (c == '\\') {
       i++;
       if (i >= value->size() - 1) {
-        *error =
-            "line " + std::to_string(lineNumber) + ": unterminated escape";
+        *error = "line " + std::to_string(lineNumber) + ": unterminated escape";
         return false;
       }
       c = (*value)[i];
+    } else if (c == quote) {
+      *error = "line " + std::to_string(lineNumber) +
+               ": unexpected text after closing quote";
+      return false;
     }
     unquoted.push_back(c);
   }
@@ -107,7 +111,11 @@ bool parseUnsignedInteger(const std::string& value, int* parsed) {
     if (c < '0' || c > '9') {
       return false;
     }
-    result = result * 10 + (c - '0');
+    int digit = c - '0';
+    if (result > (INT_MAX - digit) / 10) {
+      return false;
+    }
+    result = result * 10 + digit;
   }
 
   *parsed = result;
@@ -137,15 +145,30 @@ std::string quoteIniValue(const std::string& value) {
 
 bool writeConfigToDisk(const XRPConfiguration& config,
                        const std::string& defaultBluetoothNameSuffix) {
-  File f = LittleFS.open(XRP_CONFIG_PATH, "w");
+  // Replace the config only after the complete new contents are on disk.
+  // A failed or interrupted rename must leave the previous config usable.
+  constexpr const char* temporaryPath = "/config.ini.tmp";
+  std::string contents = config.toIniString(defaultBluetoothNameSuffix);
+  File f = LittleFS.open(temporaryPath, "w");
   if (!f) {
     Serial.println("[CONFIG] Failed to open config file for writing");
     return false;
   }
 
-  f.print(config.toIniString(defaultBluetoothNameSuffix).c_str());
+  size_t written = f.print(contents.c_str());
   f.close();
-  return true;
+  // Arduino's File::close() cannot report a failed LittleFS sync. Reopen the
+  // file to verify the committed contents before replacing the old config.
+  File verification = LittleFS.open(temporaryPath, "r");
+  bool complete = written == contents.size() && verification &&
+                  readFileToString(verification) == contents;
+  verification.close();
+  if (complete && LittleFS.rename(temporaryPath, XRP_CONFIG_PATH)) {
+    return true;
+  }
+  LittleFS.remove(temporaryPath);
+  Serial.println("[CONFIG] Failed to save config file");
+  return false;
 }
 
 XRPConfiguration resetToDefaultConfig(
@@ -202,9 +225,8 @@ bool parseConfigIni(const std::string& contents,
           return false;
         }
 
-        if (currentSection.empty() &&
-            (key == CONFIG_VERSION_KEY ||
-             key == CONFIG_VERSION_CAMEL_CASE_KEY)) {
+        if (currentSection.empty() && (key == CONFIG_VERSION_KEY ||
+                                       key == CONFIG_VERSION_CAMEL_CASE_KEY)) {
           foundConfigVersion = true;
           if (!parseUnsignedInteger(value, &parsedConfigVersion)) {
             *error = "line " + std::to_string(lineNumber) +

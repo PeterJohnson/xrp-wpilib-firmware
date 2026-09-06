@@ -25,8 +25,7 @@ class XRPConfiguration {
  public:
   XRPBluetoothConfig bluetoothConfig;
 
-  std::string toIniString(
-      const std::string& defaultBluetoothNameSuffix) const;
+  std::string toIniString(const std::string& defaultBluetoothNameSuffix) const;
 };
 
 std::string buildBluetoothDeviceName(const std::string& deviceNameSuffix);

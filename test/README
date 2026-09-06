@@ -1,11 +1,38 @@
+Run both firmware builds with:
 
-This directory is intended for PlatformIO Test Runner and project tests.
+    pio run
 
-Unit Testing is a software testing method by which individual units of
-source code, sets of one or more MCU program modules together with associated
-control data, usage procedures, and operating procedures, are tested to
-determine whether they are fit for use. Unit testing finds problems early
-in the development cycle.
+Run host regression tests after the framework is installed:
 
-More information about PlatformIO Unit Testing:
-- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+    python3 test/run_native.py
+
+The runner needs a C++17 compiler with AddressSanitizer and
+UndefinedBehaviorSanitizer. Set CXX to select a compiler and ARDUINO_PICO_DIR
+to use a framework outside ~/.platformio/packages/framework-arduinopico.
+When running under ptrace, disable unsupported leak detection with:
+
+    ASAN_OPTIONS=detect_leaks=0 python3 test/run_native.py
+
+Tests use the production protocol, config, and Bluetooth transport sources.
+Hardware-facing APIs are replaced with fakes; transport tests use the installed
+BTstack headers to check signatures and decode real event layouts. The fake
+radio checks lock ownership, retains L2CAP SDU buffers across sends, and can
+invoke notification/can-send callbacks synchronously or later.
+
+Coverage includes sequence rollover, duplicate/stale rejection, all 512 fixed
+control-field combinations and their truncated forms, motor/servo limits,
+all 181 servo angles through the protocol and actual XRPServo conversion,
+sensor serialization, timing echoes, failed renames, INI quoting and integer
+overflow, atomic config replacement failures, advertising limits, MTU limits,
+CCCD validation, foreign writes, prepared/offset writes, pending channel
+reservation, buffer lifetime, coalescing, callback ordering, receive overflow,
+and disconnect/reconnect cleanup.
+
+Hardware verification still needed before release:
+- Connect with GATT and L2CAP clients, stream control/status traffic, and verify
+  sensor values, watchdog output shutoff, and reconnect behavior.
+- Exercise small and sufficient ATT MTUs, subscribe/unsubscribe, an additional
+  connection attempt, and L2CAP credit starvation during status streaming.
+- Rename while controls are streaming; outputs must remain off until reboot.
+  Verify the advertised name and persisted config after reboot.
+- Verify USB serial diagnostics and the idle status-file snapshot on both boards.

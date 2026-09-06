@@ -375,6 +375,12 @@ void writeStatusToDisk(const char* chipID, const char* diagnosticsSnapshot) {
 }
 
 bool writeStatusToDiskSafely(const char* diagnosticsSnapshot) {
+  _lastStatusDiskWrite = millis();
+  // Flash writes mask interrupts and delay Bluetooth and the robot watchdog.
+  // Keep live diagnostics on Serial; refresh the USB snapshot while idle.
+  if (bluetooth_transport::connected() || xrp::robotEnabled()) {
+    return false;
+  }
   bool wroteStatus = false;
   noInterrupts();
   if (!_statusDriveMounted) {
@@ -382,11 +388,13 @@ bool writeStatusToDiskSafely(const char* diagnosticsSnapshot) {
     wroteStatus = true;
   }
   interrupts();
-  _lastStatusDiskWrite = millis();
   return wroteStatus;
 }
 
 bool handleBluetoothDeviceNameRequest(const char* deviceName, size_t length) {
+  if (_restartRequested) {
+    return false;
+  }
   std::string requestedDeviceName(deviceName, length);
   std::string deviceNameSuffix =
       normalizeBluetoothDeviceNameSuffix(requestedDeviceName);
@@ -395,8 +403,15 @@ bool handleBluetoothDeviceNameRequest(const char* deviceName, size_t length) {
     return false;
   }
 
-  if (!saveBluetoothDeviceName(deviceNameSuffix,
-                               DEFAULT_BLUETOOTH_NAME_SUFFIX)) {
+  // Stop outputs before a potentially slow flash write. USB drive reads also
+  // use LittleFS from an interrupt, so serialize the config replacement.
+  xrp::robotSetEnabled(false);
+  xrp::imuSetEnabled(false);
+  noInterrupts();
+  bool saved = saveBluetoothDeviceName(requestedDeviceName,
+                                       DEFAULT_BLUETOOTH_NAME_SUFFIX);
+  interrupts();
+  if (!saved) {
     Serial.println("[CONFIG] Failed to save Bluetooth rename request");
     return false;
   }
@@ -409,8 +424,6 @@ bool handleBluetoothDeviceNameRequest(const char* deviceName, size_t length) {
   Serial.printf("[CONFIG] Bluetooth name changed to %s; rebooting\n",
                 BLUETOOTH_DEVICE_NAME);
 
-  writeStatusToDiskSafely("bluetooth rename");
-  xrp::robotSetEnabled(false);
   _restartRequested = true;
   _restartAtMs = millis() + 500;
   return true;
@@ -431,14 +444,12 @@ void sendData() {
   _lastStatusBuildMs = statusBuildMs;
   _statusPacketBuildCount++;
 
-  int size = 0;
-  char buffer[512];
-  int ptr = 0;
+  char buffer[bluetooth_transport::MAX_PACKET_SIZE];
+  int ptr = wpilibudp::PACKET_HEADER_SIZE;
   uint16_t fieldMask = 0;
 
   uint16ToNetwork(seq, buffer);
   buffer[2] = wpilibudp::lastControlByteReceived();
-  ptr = wpilibudp::PACKET_HEADER_SIZE;
 
   // Encoders
   static constexpr uint divisor = xrp::Encoder::getDivisor();
@@ -449,8 +460,12 @@ void sendData() {
     // We want to flip the encoder 0 value (left motor encoder) so that this returns
     // positive values when moving forward.
     if (i == 0) {
-      encoderValue = -encoderValue;
-      encoderPeriod ^= 1;  // Last bit is direction bit; Flip it.
+      // Unsigned subtraction also handles the signed counter's wrap point.
+      encoderValue =
+          static_cast<int32_t>(0u - static_cast<uint32_t>(encoderValue));
+      if (encoderPeriod != UINT32_MAX) {
+        encoderPeriod ^= 1;  // Flip direction, preserving the invalid sentinel.
+      }
     }
 
     fieldMask |= wpilibudp::STATUS_ENCODER_0 << i;
@@ -503,10 +518,7 @@ void sendData() {
   ptr += wpilibudp::writeTimingData(buffer, ptr);
   uint16ToNetwork(fieldMask, buffer, 3);
 
-  // ptr should now point to 1 past the last byte
-  size = ptr;
-
-  if (bluetooth_transport::sendPacket(buffer, size)) {
+  if (bluetooth_transport::sendPacket(buffer, ptr)) {
     unsigned long statusAcceptedMs = millis();
     if (_lastStatusAcceptedMs != 0) {
       _lastStatusAcceptedIntervalMs =
@@ -658,11 +670,30 @@ void setup() {
 void loop() {
   unsigned long loopStartTime = micros();
 
-  // Check for data from the Bluetooth transport.
-  size_t packetSize = 0;
-  while (bluetooth_transport::readPacket(
-      transportPacketBuf, sizeof(transportPacketBuf), &packetSize)) {
-    wpilibudp::processPacket(transportPacketBuf, static_cast<int>(packetSize));
+  // Clear control state even if a disconnect and reconnect both occurred
+  // between loop iterations. A new client may start its sequence at zero.
+  static uint32_t previousSession = 0;
+  // Bound work per iteration so incoming traffic cannot starve sensor updates
+  // or the restart deadline. This drains a full receive queue in one pass.
+  constexpr unsigned MAX_CONTROL_PACKETS_PER_LOOP = 16;
+  for (unsigned i = 0; i < MAX_CONTROL_PACKETS_PER_LOOP; ++i) {
+    size_t packetSize = 0;
+    uint32_t session;
+    bool havePacket = bluetooth_transport::readPacket(
+        transportPacketBuf, sizeof(transportPacketBuf), &packetSize, &session);
+    if (session != previousSession || !wpilibudp::dsWatchdogActive()) {
+      previousSession = session;
+      wpilibudp::resetState();
+      xrp::robotSetEnabled(false);
+      xrp::imuSetEnabled(false);
+    }
+    if (!havePacket) {
+      break;
+    }
+    if (!_restartRequested) {
+      wpilibudp::processPacket(transportPacketBuf,
+                               static_cast<int>(packetSize));
+    }
   }
 
   if (_restartRequested &&
@@ -672,14 +703,6 @@ void loop() {
 
   xrp::imuPeriodic();
   xrp::rangefinderPollForData();
-
-  // Disable the robot when the driver station watchdog times out.
-  // Also reset the max sequence number so we can handle reconnects.
-  if (!wpilibudp::dsWatchdogActive()) {
-    wpilibudp::resetState();
-    xrp::robotSetEnabled(false);
-    xrp::imuSetEnabled(false);
-  }
 
   if (xrp::robotPeriodic()) {
     // Package up and send all the data to the Bluetooth client.
