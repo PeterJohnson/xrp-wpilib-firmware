@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <limits.h>
 
 namespace {
 
@@ -89,6 +90,10 @@ bool unquoteIniValue(std::string* value, std::string* error,
         return false;
       }
       c = (*value)[i];
+    } else if (c == quote) {
+      *error = "line " + std::to_string(lineNumber) +
+               ": unexpected text after closing quote";
+      return false;
     }
     unquoted.push_back(c);
   }
@@ -107,7 +112,11 @@ bool parseUnsignedInteger(const std::string& value, int* parsed) {
     if (c < '0' || c > '9') {
       return false;
     }
-    result = result * 10 + (c - '0');
+    int digit = c - '0';
+    if (result > (INT_MAX - digit) / 10) {
+      return false;
+    }
+    result = result * 10 + digit;
   }
 
   *parsed = result;
@@ -137,15 +146,28 @@ std::string quoteIniValue(const std::string& value) {
 
 bool writeConfigToDisk(const XRPConfiguration& config,
                        const std::string& defaultBluetoothNameSuffix) {
-  File f = LittleFS.open(XRP_CONFIG_PATH, "w");
+  // Keep the previous configuration until the full replacement is committed.
+  constexpr const char* temporaryPath = "/config.ini.tmp";
+  std::string contents = config.toIniString(defaultBluetoothNameSuffix);
+  File f = LittleFS.open(temporaryPath, "w");
   if (!f) {
     Serial.println("[CONFIG] Failed to open config file for writing");
     return false;
   }
 
-  f.print(config.toIniString(defaultBluetoothNameSuffix).c_str());
+  size_t written = f.print(contents.c_str());
   f.close();
-  return true;
+  // File::close() cannot report sync errors; verify before replacing the file.
+  File verification = LittleFS.open(temporaryPath, "r");
+  bool complete = written == contents.size() && verification &&
+                  readFileToString(verification) == contents;
+  verification.close();
+  if (complete && LittleFS.rename(temporaryPath, XRP_CONFIG_PATH)) {
+    return true;
+  }
+  LittleFS.remove(temporaryPath);
+  Serial.println("[CONFIG] Failed to save config file");
+  return false;
 }
 
 XRPConfiguration resetToDefaultConfig(

@@ -49,6 +49,7 @@ uint32_t _statusPacketRejectedCount = 0;
 bool _restartRequested = false;
 unsigned long _restartAtMs = 0;
 unsigned long _commandAckUntilMs = 0;
+uint32_t _lastCommandAckVersion = 0;
 unsigned long _lastStatusBuildMs = 0;
 unsigned long _lastStatusBuildIntervalMs = 0;
 unsigned long _maxStatusBuildIntervalMs = 0;
@@ -377,6 +378,11 @@ void writeStatusToDisk(const char* chipID, const char* diagnosticsSnapshot) {
 }
 
 bool writeStatusToDiskSafely(const char* diagnosticsSnapshot) {
+  _lastStatusDiskWrite = millis();
+  // Flash writes delay Bluetooth callbacks and the output watchdog.
+  if (bluetooth_transport::connected() || xrp::robotEnabled()) {
+    return false;
+  }
   bool wroteStatus = false;
   noInterrupts();
   if (!_statusDriveMounted) {
@@ -384,12 +390,14 @@ bool writeStatusToDiskSafely(const char* diagnosticsSnapshot) {
     wroteStatus = true;
   }
   interrupts();
-  _lastStatusDiskWrite = millis();
   return wroteStatus;
 }
 
 uint8_t handleBluetoothDeviceNameRequest(const char* deviceName,
                                          size_t length) {
+  if (_restartRequested) {
+    return wpilibudp::COMMAND_ACK_REJECTED;
+  }
   std::string requestedDeviceName(deviceName, length);
   std::string deviceNameSuffix =
       normalizeBluetoothDeviceNameSuffix(requestedDeviceName);
@@ -398,8 +406,15 @@ uint8_t handleBluetoothDeviceNameRequest(const char* deviceName,
     return wpilibudp::COMMAND_ACK_REJECTED;
   }
 
-  if (!saveBluetoothDeviceName(deviceNameSuffix,
-                               DEFAULT_BLUETOOTH_NAME_SUFFIX)) {
+  // Disable outputs before flash stalls, and serialize LittleFS access with
+  // USB status-file reads in the interrupt handler. Normalize the name once.
+  xrp::robotSetEnabled(false);
+  xrp::imuSetEnabled(false);
+  noInterrupts();
+  bool saved = saveBluetoothDeviceName(requestedDeviceName,
+                                       DEFAULT_BLUETOOTH_NAME_SUFFIX);
+  interrupts();
+  if (!saved) {
     Serial.println("[CONFIG] Failed to save Bluetooth rename request");
     return wpilibudp::COMMAND_ACK_REJECTED;
   }
@@ -412,8 +427,6 @@ uint8_t handleBluetoothDeviceNameRequest(const char* deviceName,
   Serial.printf("[CONFIG] Bluetooth name changed to %s; rebooting\n",
                 BLUETOOTH_DEVICE_NAME);
 
-  writeStatusToDiskSafely("bluetooth rename");
-  xrp::robotSetEnabled(false);
   _restartRequested = true;
   _restartAtMs = millis() + 500;
   return wpilibudp::COMMAND_ACK_SUCCESS;
@@ -429,7 +442,9 @@ bool shouldSendCommandAck(unsigned long now) {
     return false;
   }
 
-  if (_commandAckUntilMs == 0) {
+  uint32_t version = wpilibudp::commandAckVersion();
+  if (_commandAckUntilMs == 0 || version != _lastCommandAckVersion) {
+    _lastCommandAckVersion = version;
     _commandAckUntilMs = now + COMMAND_ACK_REPEAT_MS;
   }
 
@@ -499,8 +514,12 @@ void sendData() {
     // We want to flip the encoder 0 value (left motor encoder) so that this returns
     // positive values when moving forward.
     if (i == 0) {
-      encoderValue = -encoderValue;
-      encoderPeriod ^= 1;  // Last bit is direction bit; Flip it.
+      // Use unsigned arithmetic at the signed counter's wrap point.
+      encoderValue =
+          static_cast<int32_t>(0u - static_cast<uint32_t>(encoderValue));
+      if (encoderPeriod != UINT32_MAX) {
+        encoderPeriod ^= 1;  // Preserve the invalid-period sentinel.
+      }
     }
 
     fieldMask |= wpilibudp::STATUS_ENCODER_0 << i;
@@ -571,7 +590,9 @@ void checkPrintStatus() {
                   "mtu:%u size:%u ctrl:%lu cccd:%lu q:%lu bN:%lu bM:%lu "
                   "req:%lu cb:%lu imm:%lu sent:%lu drop:%lu rx:%u/%u "
                   "rxmax:%u rxdrop:%lu l2q:%lu l2i:%lu l2s:%lu l2d:%lu "
-                  "rej:%lu/%lu/%lu last:%02x/%02x/%02x\n",
+                  "rej:%lu/%lu/%lu last:%02x/%02x/%02x "
+                  "active:%u tx:%u pending:%d requested:%d pending_us:%lu "
+                  "l2cid:%04x credits:%u\n",
                   millis(),
                   usedHeap,
                   bluetooth_transport::connected() ? 1 : 0,
@@ -606,7 +627,14 @@ void checkPrintStatus() {
                   static_cast<unsigned long>(btDiag.rejectedL2capConnections),
                   btDiag.lastL2capSendResult,
                   btDiag.lastGattNotifyRequestResult,
-                  btDiag.lastGattNotifyResult);
+                  btDiag.lastGattNotifyResult,
+                  btDiag.activeTransport,
+                  btDiag.txTransport,
+                  btDiag.txPending ? 1 : 0,
+                  btDiag.txCanSendRequested ? 1 : 0,
+                  static_cast<unsigned long>(btDiag.txPendingAgeUs),
+                  btDiag.l2capChannelId,
+                  btDiag.l2capPeerCredits);
     _lastMessageStatusPrint = millis();
   }
 }
@@ -694,11 +722,30 @@ void setup() {
 void loop() {
   unsigned long loopStartTime = micros();
 
-  // Check for data from the Bluetooth transport.
-  size_t packetSize = 0;
-  while (bluetooth_transport::readPacket(
-      transportPacketBuf, sizeof(transportPacketBuf), &packetSize)) {
-    wpilibudp::processPacket(transportPacketBuf, static_cast<int>(packetSize));
+  // A disconnect/reconnect may occur entirely between loop iterations. Read
+  // the session and packet atomically so the new peer can start at any sequence.
+  static uint32_t previousSession = 0;
+  // Bound work so sustained control traffic cannot starve outputs or reboot.
+  constexpr unsigned MAX_CONTROL_PACKETS_PER_LOOP = 16;
+  for (unsigned i = 0; i < MAX_CONTROL_PACKETS_PER_LOOP; ++i) {
+    size_t packetSize = 0;
+    uint32_t session;
+    bool havePacket = bluetooth_transport::readPacket(
+        transportPacketBuf, sizeof(transportPacketBuf), &packetSize, &session);
+    if (session != previousSession) {
+      previousSession = session;
+      wpilibudp::resetState();
+      wpilibudp::clearCommandAck();
+      _commandAckUntilMs = 0;
+      xrp::robotSetEnabled(false);
+      xrp::imuSetEnabled(false);
+    }
+    if (!havePacket) {
+      break;
+    }
+    if (!_restartRequested) {
+      wpilibudp::processPacket(transportPacketBuf, static_cast<int>(packetSize));
+    }
   }
 
   if (_restartRequested &&

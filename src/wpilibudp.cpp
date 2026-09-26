@@ -9,6 +9,7 @@ namespace wpilibudp {
 
 uint16_t currMaxSeq = 0;
 bool haveCurrMaxSeq = false;
+uint16_t lastControlSeq = 0;
 uint32_t lastControlPacketMicros = 0;
 uint8_t lastControlByte = 0;
 bool receivedControlPacket = false;
@@ -16,6 +17,7 @@ uint16_t commandAckControlSeq = 0;
 uint16_t commandAckControlFieldMask = 0;
 uint8_t commandAckResult = COMMAND_ACK_REJECTED;
 bool pendingCommandAck = false;
+uint32_t commandAckGeneration = 0;
 DeviceNameHandler deviceNameHandler = nullptr;
 xrp::Watchdog _dsWatchdog{"status"};
 
@@ -39,7 +41,7 @@ uint8_t clampServoDegrees(uint8_t degrees) {
 }
 
 uint16_t voltageToAnalogValue(float voltage) {
-  if (voltage <= 0.0f) {
+  if (!(voltage > 0.0f)) {  // Includes NaN; do not convert it to an integer.
     return 0;
   }
   if (voltage >= ANALOG_MAX_VOLTAGE) {
@@ -124,6 +126,7 @@ void queueCommandAck(uint16_t seq, uint16_t fieldMask, uint8_t result) {
   commandAckResult = result == COMMAND_ACK_SUCCESS ? COMMAND_ACK_SUCCESS
                                                    : COMMAND_ACK_REJECTED;
   pendingCommandAck = true;
+  ++commandAckGeneration;
 }
 
 bool processDeviceNamePacket(char* buffer, int size, uint16_t seq) {
@@ -151,7 +154,9 @@ bool processDeviceNamePacket(char* buffer, int size, uint16_t seq) {
   return commandAckResult == COMMAND_ACK_SUCCESS;
 }
 
-bool dsWatchdogActive() { return _dsWatchdog.satisfied(); }
+bool dsWatchdogActive() {
+  return receivedControlPacket && _dsWatchdog.satisfied();
+}
 
 void setDeviceNameHandler(DeviceNameHandler handler) {
   deviceNameHandler = handler;
@@ -160,6 +165,7 @@ void setDeviceNameHandler(DeviceNameHandler handler) {
 void resetState() {
   currMaxSeq = 0;
   haveCurrMaxSeq = false;
+  lastControlSeq = 0;
   lastControlPacketMicros = 0;
   lastControlByte = 0;
   receivedControlPacket = false;
@@ -168,6 +174,8 @@ void resetState() {
 uint8_t lastControlByteReceived() { return lastControlByte; }
 
 bool commandAckPending() { return pendingCommandAck; }
+
+uint32_t commandAckVersion() { return commandAckGeneration; }
 
 void clearCommandAck() { pendingCommandAck = false; }
 
@@ -201,6 +209,7 @@ bool processPacket(char* buffer, int size) {
     // Not processing this
     return false;
   }
+  lastControlSeq = seq;
   lastControlPacketMicros = micros();
   lastControlByte = ctrl;
   receivedControlPacket = true;
@@ -301,7 +310,7 @@ int writeAnalogData(float voltage, char* buffer, int offset) {
 
 int writeTimingData(char* buffer, int offset) {
   // Timing data is lastControlSeq(2) + controlRxAge10Us(2).
-  uint16ToNetwork(currMaxSeq, buffer, offset);
+  uint16ToNetwork(lastControlSeq, buffer, offset);
   uint16ToNetwork(encodeControlRxAge10Us(), buffer, offset + 2);
 
   return 4;

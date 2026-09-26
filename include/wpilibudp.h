@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace wpilibudp {
@@ -57,6 +58,8 @@ bool processPacket(char* buffer, int size);
 void resetState();
 uint8_t lastControlByteReceived();
 bool commandAckPending();
+// Changes for each queued ACK, even when it replaces an unexpired ACK.
+uint32_t commandAckVersion();
 void clearCommandAck();
 
 int writeEncoderData(int count, unsigned period, unsigned divisor, char* buffer,

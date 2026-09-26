@@ -91,13 +91,17 @@ constexpr unsigned PREFERRED_CONNECTION_INTERVAL_MAX = 12;  // 15 ms
 constexpr unsigned PREFERRED_SLAVE_LATENCY = 0;
 
 void begin(const char* deviceName);
-const AdvertisementDiagnostics& advertisementDiagnostics();
-const ConnectionDiagnostics& connectionDiagnostics();
+AdvertisementDiagnostics advertisementDiagnostics();
+ConnectionDiagnostics connectionDiagnostics();
 bool connected();
+uint32_t connectionSession();
 unsigned hciState();
 const char* hciStateName();
 void localAddress(char* buffer, size_t bufferSize);
-bool readPacket(char* buffer, size_t bufferSize, size_t* packetSize);
+// Return the session even when there is no packet, under the receive lock.
+// Callers can reset protocol state across disconnect/reconnect between polls.
+bool readPacket(char* buffer, size_t bufferSize, size_t* packetSize,
+                uint32_t* session = nullptr);
 bool sendPacket(const char* buffer, size_t packetSize);
 
 }  // namespace bluetooth_transport
