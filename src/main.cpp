@@ -38,6 +38,7 @@ unsigned long _lastStatusDiskWrite = 0;
 uint32_t _statusDiskWriteCount = 0;
 volatile bool _statusDriveMounted = false;
 constexpr unsigned long STATUS_DISK_UPDATE_INTERVAL_MS = 10000;
+constexpr unsigned long COMMAND_ACK_REPEAT_MS = 500;
 
 unsigned long _avgLoopTimeUs = 0;
 unsigned long _maxLoopTimeUs = 0;
@@ -47,6 +48,7 @@ uint32_t _statusPacketAcceptedCount = 0;
 uint32_t _statusPacketRejectedCount = 0;
 bool _restartRequested = false;
 unsigned long _restartAtMs = 0;
+unsigned long _commandAckUntilMs = 0;
 unsigned long _lastStatusBuildMs = 0;
 unsigned long _lastStatusBuildIntervalMs = 0;
 unsigned long _maxStatusBuildIntervalMs = 0;
@@ -386,19 +388,20 @@ bool writeStatusToDiskSafely(const char* diagnosticsSnapshot) {
   return wroteStatus;
 }
 
-bool handleBluetoothDeviceNameRequest(const char* deviceName, size_t length) {
+uint8_t handleBluetoothDeviceNameRequest(const char* deviceName,
+                                         size_t length) {
   std::string requestedDeviceName(deviceName, length);
   std::string deviceNameSuffix =
       normalizeBluetoothDeviceNameSuffix(requestedDeviceName);
   if (!isValidBluetoothDeviceNameSuffix(deviceNameSuffix)) {
     Serial.println("[CONFIG] Rejected Bluetooth rename request");
-    return false;
+    return wpilibudp::COMMAND_ACK_REJECTED;
   }
 
   if (!saveBluetoothDeviceName(deviceNameSuffix,
                                DEFAULT_BLUETOOTH_NAME_SUFFIX)) {
     Serial.println("[CONFIG] Failed to save Bluetooth rename request");
-    return false;
+    return wpilibudp::COMMAND_ACK_REJECTED;
   }
 
   std::string bluetoothDeviceName =
@@ -413,12 +416,49 @@ bool handleBluetoothDeviceNameRequest(const char* deviceName, size_t length) {
   xrp::robotSetEnabled(false);
   _restartRequested = true;
   _restartAtMs = millis() + 500;
-  return true;
+  return wpilibudp::COMMAND_ACK_SUCCESS;
 }
 
 // ==================================================
 // Bluetooth Transport Functions
 // ==================================================
+
+bool shouldSendCommandAck(unsigned long now) {
+  if (!wpilibudp::commandAckPending()) {
+    _commandAckUntilMs = 0;
+    return false;
+  }
+
+  if (_commandAckUntilMs == 0) {
+    _commandAckUntilMs = now + COMMAND_ACK_REPEAT_MS;
+  }
+
+  if (static_cast<long>(now - _commandAckUntilMs) >= 0) {
+    wpilibudp::clearCommandAck();
+    _commandAckUntilMs = 0;
+    return false;
+  }
+
+  return true;
+}
+
+void sendStatusPacket(char* buffer, int size) {
+  if (bluetooth_transport::sendPacket(buffer, size)) {
+    unsigned long statusAcceptedMs = millis();
+    if (_lastStatusAcceptedMs != 0) {
+      _lastStatusAcceptedIntervalMs =
+          statusAcceptedMs - _lastStatusAcceptedMs;
+      if (_lastStatusAcceptedIntervalMs > _maxStatusAcceptedIntervalMs) {
+        _maxStatusAcceptedIntervalMs = _lastStatusAcceptedIntervalMs;
+      }
+    }
+    _lastStatusAcceptedMs = statusAcceptedMs;
+    _statusPacketAcceptedCount++;
+    seq++;
+  } else {
+    _statusPacketRejectedCount++;
+  }
+}
 
 void sendData() {
   unsigned long statusBuildMs = millis();
@@ -435,10 +475,20 @@ void sendData() {
   char buffer[512];
   int ptr = 0;
   uint16_t fieldMask = 0;
+  bool sendCommandAck = shouldSendCommandAck(statusBuildMs);
 
   uint16ToNetwork(seq, buffer);
   buffer[2] = wpilibudp::lastControlByteReceived();
   ptr = wpilibudp::PACKET_HEADER_SIZE;
+
+  if (sendCommandAck) {
+    fieldMask |= wpilibudp::STATUS_COMMAND_ACK;
+    ptr += wpilibudp::writeCommandAckData(buffer, ptr);
+    uint16ToNetwork(fieldMask, buffer, 3);
+    size = ptr;
+    sendStatusPacket(buffer, size);
+    return;
+  }
 
   // Encoders
   static constexpr uint divisor = xrp::Encoder::getDivisor();
@@ -506,21 +556,7 @@ void sendData() {
   // ptr should now point to 1 past the last byte
   size = ptr;
 
-  if (bluetooth_transport::sendPacket(buffer, size)) {
-    unsigned long statusAcceptedMs = millis();
-    if (_lastStatusAcceptedMs != 0) {
-      _lastStatusAcceptedIntervalMs =
-          statusAcceptedMs - _lastStatusAcceptedMs;
-      if (_lastStatusAcceptedIntervalMs > _maxStatusAcceptedIntervalMs) {
-        _maxStatusAcceptedIntervalMs = _lastStatusAcceptedIntervalMs;
-      }
-    }
-    _lastStatusAcceptedMs = statusAcceptedMs;
-    _statusPacketAcceptedCount++;
-    seq++;
-  } else {
-    _statusPacketRejectedCount++;
-  }
+  sendStatusPacket(buffer, size);
 }
 
 void checkPrintStatus() {

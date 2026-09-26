@@ -4,19 +4,18 @@
 #include "wpilibudp.h"
 #include "robot.h"
 #include "watchdog.h"
-#include "imu.h"
-
-// Since we might (nay, will) rollover, the fudge factor lets us deal with cases
-// like 65532, 65533, 0, 65534, 65535 by taking 0 as the new highest seq number
-#define SEQ_FUDGE_FACTOR 5
-#define SEQ_MAX 65535
 
 namespace wpilibudp {
 
 uint16_t currMaxSeq = 0;
+bool haveCurrMaxSeq = false;
 uint32_t lastControlPacketMicros = 0;
 uint8_t lastControlByte = 0;
 bool receivedControlPacket = false;
+uint16_t commandAckControlSeq = 0;
+uint16_t commandAckControlFieldMask = 0;
+uint8_t commandAckResult = COMMAND_ACK_REJECTED;
+bool pendingCommandAck = false;
 DeviceNameHandler deviceNameHandler = nullptr;
 xrp::Watchdog _dsWatchdog{"status"};
 
@@ -104,23 +103,31 @@ uint16_t encodeControlRxAge10Us() {
 }
 
 bool acceptSequence(uint16_t seq) {
-  if (seq > currMaxSeq) {
+  if (!haveCurrMaxSeq) {
     currMaxSeq = seq;
+    haveCurrMaxSeq = true;
     return true;
   }
 
-  if (SEQ_MAX - seq < SEQ_FUDGE_FACTOR) {
-    // Rollover
-    currMaxSeq = seq;
-    return true;
+  uint16_t distance = seq - currMaxSeq;
+  if (distance == 0 || distance >= 0x8000) {
+    return false;
   }
 
-  return false;
+  currMaxSeq = seq;
+  return true;
+}
+
+void queueCommandAck(uint16_t seq, uint16_t fieldMask, uint8_t result) {
+  commandAckControlSeq = seq;
+  commandAckControlFieldMask = fieldMask;
+  commandAckResult = result == COMMAND_ACK_SUCCESS ? COMMAND_ACK_SUCCESS
+                                                   : COMMAND_ACK_REJECTED;
+  pendingCommandAck = true;
 }
 
 bool processDeviceNamePacket(char* buffer, int size, uint16_t seq) {
-  if (deviceNameHandler == nullptr ||
-      size < PACKET_HEADER_SIZE + static_cast<int>(sizeof(uint8_t))) {
+  if (size < PACKET_HEADER_SIZE + static_cast<int>(sizeof(uint8_t))) {
     return false;
   }
 
@@ -136,7 +143,12 @@ bool processDeviceNamePacket(char* buffer, int size, uint16_t seq) {
     return false;
   }
 
-  return deviceNameHandler(&buffer[PACKET_HEADER_SIZE + 1], deviceNameLength);
+  uint8_t result = deviceNameHandler == nullptr
+                       ? COMMAND_ACK_REJECTED
+                       : deviceNameHandler(&buffer[PACKET_HEADER_SIZE + 1],
+                                           deviceNameLength);
+  queueCommandAck(seq, CONTROL_DEVICE_NAME, result);
+  return commandAckResult == COMMAND_ACK_SUCCESS;
 }
 
 bool dsWatchdogActive() { return _dsWatchdog.satisfied(); }
@@ -147,6 +159,7 @@ void setDeviceNameHandler(DeviceNameHandler handler) {
 
 void resetState() {
   currMaxSeq = 0;
+  haveCurrMaxSeq = false;
   lastControlPacketMicros = 0;
   lastControlByte = 0;
   receivedControlPacket = false;
@@ -154,8 +167,12 @@ void resetState() {
 
 uint8_t lastControlByteReceived() { return lastControlByte; }
 
+bool commandAckPending() { return pendingCommandAck; }
+
+void clearCommandAck() { pendingCommandAck = false; }
+
 bool processPacket(char* buffer, int size) {
-  if (size < PACKET_HEADER_SIZE) {
+  if (buffer == nullptr || size < PACKET_HEADER_SIZE) {
     return false;
   }
 
@@ -288,6 +305,15 @@ int writeTimingData(char* buffer, int offset) {
   uint16ToNetwork(encodeControlRxAge10Us(), buffer, offset + 2);
 
   return 4;
+}
+
+int writeCommandAckData(char* buffer, int offset) {
+  // Command ack data is controlSeq(2) + controlFieldMask(2) + result(1).
+  uint16ToNetwork(commandAckControlSeq, buffer, offset);
+  uint16ToNetwork(commandAckControlFieldMask, buffer, offset + 2);
+  buffer[offset + 4] = commandAckResult;
+
+  return 5;
 }
 
 } // namespace wpilibudp
