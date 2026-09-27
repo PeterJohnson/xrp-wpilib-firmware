@@ -39,10 +39,14 @@ struct TestLittleFS {
   std::map<std::string, std::string> files;
   bool begin() { return true; }
   bool failOpen = false;
+  unsigned writeOpens = 0;
   bool failRename = false;
   File open(const char* path, const char* mode) {
     if (failOpen) return File{};
-    if (*mode == 'w') files[path].clear();
+    if (*mode == 'w') {
+      ++writeOpens;
+      files[path].clear();
+    }
     auto it = files.find(path);
     return File{it == files.end() ? nullptr : &it->second};
   }

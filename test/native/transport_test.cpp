@@ -13,9 +13,11 @@
 void loop();
 void sendData();
 bool shouldSendCommandAck(unsigned long now);
-bool writeStatusToDiskSafely(const char*);
+void updateStatusFile();
 uint8_t handleBluetoothDeviceNameRequest(const char*, size_t);
 extern char DEFAULT_BLUETOOTH_NAME_SUFFIX[20];
+extern char CHIP_ID[20];
+extern char BLUETOOTH_DEVICE_NAME[32];
 extern bool _restartRequested;
 extern unsigned long _restartAtMs;
 extern "C" const unsigned char* GetResource_VERSION(size_t* len) {
@@ -299,6 +301,42 @@ char* bd_addr_to_str(const bd_addr_t) {
 
 int main() {
   using namespace bluetooth_transport;
+
+  // Identification is refreshed at boot only when the saved contents change.
+  std::strcpy(CHIP_ID, "AAAA-BBBB");
+  std::strcpy(BLUETOOTH_DEVICE_NAME, "WPIXRP-Bot");
+  updateStatusFile();
+  assert(LittleFS.writeOpens == 1);
+  const auto identification = LittleFS.files.at("/status.txt");
+  assert(identification.find("Version: test\n") != std::string::npos);
+  assert(identification.find("Chip ID: AAAA-BBBB\n") != std::string::npos);
+  assert(identification.find("Bluetooth Name: WPIXRP-Bot\n") !=
+         std::string::npos);
+  assert(identification.find("USB Serial at 115200 baud") != std::string::npos);
+  assert(identification.find("Uptime") == std::string::npos);
+  assert(identification.find("Packet Counters") == std::string::npos);
+  auto writes = LittleFS.writeOpens;
+  updateStatusFile();
+  assert(LittleFS.writeOpens == writes);
+
+  // Replace files with extra data, truncated contents, or a different version.
+  auto oldVersion = identification;
+  oldVersion.replace(oldVersion.find("test"), 4, "old!");
+  for (const auto& stale : {identification + "extra data\n",
+                            identification.substr(0, 20), oldVersion}) {
+    LittleFS.files["/status.txt"] = stale;
+    updateStatusFile();
+    assert(LittleFS.writeOpens == ++writes);
+    assert(LittleFS.files.at("/status.txt") == identification);
+  }
+  std::strcpy(BLUETOOTH_DEVICE_NAME, "WPIXRP-Renamed");
+  updateStatusFile();
+  assert(LittleFS.writeOpens == ++writes);
+  assert(LittleFS.files.at("/status.txt").find("WPIXRP-Renamed\n") !=
+         std::string::npos);
+  updateStatusFile();
+  assert(LittleFS.writeOpens == writes);
+
   begin("WPIXRP-1234567890123456789");
   const auto ad = advertisementDiagnostics();
   assert(ad.advertisingDataLength == 31 && !ad.advertisingDataOverflow);
@@ -307,6 +345,12 @@ int main() {
                      26) == 0);
   assert(ad.scanResponseData[2] == 0x3f && ad.scanResponseData[17] == 0x7d);
   assert(!connected());
+  // Runtime diagnostics must not write to the filesystem.
+  for (int i = 0; i < 3; ++i) {
+    testMicros += 11000000;
+    loop();
+    assert(LittleFS.writeOpens == writes);
+  }
   connectGatt();
   assert(connected());
   const auto handles = connectionDiagnostics();
@@ -558,7 +602,7 @@ int main() {
   auto* status = reinterpret_cast<char*>(sentL2cap.back().data());
   assert(networkToInt32(status, 5) == INT32_MIN);
   assert(networkToUInt32(status, 9) == UINT32_MAX);
-  assert(!writeStatusToDiskSafely("connected"));
+  assert(LittleFS.writeOpens == writes);
 
   // Each new ACK gets the full repeat interval, including a new command near
   // expiry of a previous NACK. Failed saves must leave outputs disabled.

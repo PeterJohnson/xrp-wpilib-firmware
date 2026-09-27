@@ -37,7 +37,7 @@ For ideal use, the XRP should be placed on a flat surface prior to power up, and
 
 The configured Bluetooth name should appear in your operating system's Bluetooth pairing UI. Windows clients should use the custom GATT service. Linux and macOS clients may use either GATT or the LE L2CAP channel on PSM `0x0081`.
 
-The Bluetooth name can also be found by connecting the XRP to a computer, navigating to the PICODISK removable drive and opening the `XRP-Status.txt` file. This snapshot refreshes while Bluetooth is disconnected and the USB status drive is unmounted; live diagnostics remain available over Serial. This file also includes Bluetooth diagnostics such as the BTstack HCI state, local Bluetooth address, advertising data, scan response data, and decoded advertisement fields.
+The Bluetooth name can also be found by connecting the XRP to a computer, navigating to the PICODISK removable drive and opening the `XRP-Status.txt` file. This file contains the firmware version, chip ID, Bluetooth name, and configuration information. It is checked at startup and rewritten only when its contents change. Live Bluetooth diagnostics are available over USB Serial at 115200 baud.
 
 ### XRP Configuration
 The firmware stores its persistent configuration in `/config.ini` on LittleFS. It is a plain text INI file so it can be edited by hand in a text editor. If the file is missing, invalid, or uses an older schema version, the firmware rewrites it with the default Bluetooth configuration template on boot.

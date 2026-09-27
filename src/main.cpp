@@ -32,365 +32,61 @@ char DEFAULT_BLUETOOTH_NAME_SUFFIX[20];
 
 char transportPacketBuf[bluetooth_transport::MAX_PACKET_SIZE];
 
-// TEMP: Status
+// Serial diagnostics
 unsigned long _lastMessageStatusPrint = 0;
-unsigned long _lastStatusDiskWrite = 0;
-uint32_t _statusDiskWriteCount = 0;
-volatile bool _statusDriveMounted = false;
-constexpr unsigned long STATUS_DISK_UPDATE_INTERVAL_MS = 10000;
 constexpr unsigned long COMMAND_ACK_REPEAT_MS = 500;
 
 unsigned long _avgLoopTimeUs = 0;
-unsigned long _maxLoopTimeUs = 0;
 unsigned long _loopTimeMeasurementCount = 0;
-uint32_t _statusPacketBuildCount = 0;
-uint32_t _statusPacketAcceptedCount = 0;
-uint32_t _statusPacketRejectedCount = 0;
 bool _restartRequested = false;
 unsigned long _restartAtMs = 0;
 unsigned long _commandAckUntilMs = 0;
 uint32_t _lastCommandAckVersion = 0;
-unsigned long _lastStatusBuildMs = 0;
-unsigned long _lastStatusBuildIntervalMs = 0;
-unsigned long _maxStatusBuildIntervalMs = 0;
-unsigned long _lastStatusAcceptedMs = 0;
-unsigned long _lastStatusAcceptedIntervalMs = 0;
-unsigned long _maxStatusAcceptedIntervalMs = 0;
 
 uint16_t seq = 0;
 
-void writeHexData(File& f, const uint8_t* data, size_t length) {
-  for (size_t i = 0; i < length; i++) {
-    if (i > 0) {
-      f.print(" ");
-    }
-    f.printf("%02x", data[i]);
+// Called only during setup, before Bluetooth and the USB status drive start.
+// Write only when identification changes to limit flash wear.
+void updateStatusFile() {
+  size_t versionLength = 0;
+  const auto* version = GetResource_VERSION(&versionLength);
+  std::string contents = "Version: ";
+  contents.append(reinterpret_cast<const char*>(version), versionLength);
+  if (contents.back() != '\n') {
+    contents += '\n';
   }
-}
+  contents += "Chip ID: ";
+  contents += CHIP_ID;
+  contents += "\nBluetooth Name: ";
+  contents += BLUETOOTH_DEVICE_NAME;
+  contents += "\nConfig Version: " + std::to_string(XRP_CONFIG_VERSION);
+  contents += "\nConfig File: ";
+  contents += XRP_CONFIG_PATH;
+  contents += "\nTransport: Bluetooth LE GATT + L2CAP Credit-Based Mode\n";
+  contents += "\nLive diagnostics: USB Serial at 115200 baud.\n";
 
-void writeAsciiData(File& f, const uint8_t* data, size_t length) {
-  f.print("\"");
-  for (size_t i = 0; i < length; i++) {
-    uint8_t c = data[i];
-    if (c == '"' || c == '\\') {
-      f.print("\\");
-      f.print(static_cast<char>(c));
-    } else if (c >= 0x20 && c <= 0x7e) {
-      f.print(static_cast<char>(c));
-    } else {
-      f.print(".");
-    }
+  File existing = LittleFS.open("/status.txt", "r");
+  size_t matched = 0;
+  while (existing && matched < contents.size() && existing.available() &&
+         existing.read() == static_cast<unsigned char>(contents[matched])) {
+    matched++;
   }
-  f.print("\"");
-}
-
-void writeUuid128Le(File& f, const uint8_t* uuid) {
-  for (int i = 15; i >= 0; i--) {
-    f.printf("%02x", uuid[i]);
-    if (i == 12 || i == 10 || i == 8 || i == 6) {
-      f.print("-");
-    }
-  }
-}
-
-const char* getAdTypeName(uint8_t type) {
-  switch (type) {
-    case 0x01:
-      return "Flags";
-    case 0x07:
-      return "Complete 128-bit Service UUIDs";
-    case 0x08:
-      return "Shortened Local Name";
-    case 0x09:
-      return "Complete Local Name";
-    case 0x12:
-      return "Slave Connection Interval Range";
-    default:
-      return "Unknown";
-  }
-}
-
-void writeAdvertisementFields(File& f, const char* label, const uint8_t* data,
-                              uint8_t length) {
-  f.printf("%s Fields:\n", label);
-  size_t pos = 0;
-  int field = 0;
-  while (pos < length) {
-    uint8_t fieldLength = data[pos++];
-    if (fieldLength == 0) {
-      f.printf("  [%d] zero length terminator\n", field);
-      break;
-    }
-    if (pos + fieldLength > length || fieldLength < 1) {
-      f.printf("  [%d] invalid field length %u at offset %u\n", field,
-               fieldLength, static_cast<unsigned>(pos - 1));
-      break;
-    }
-
-    uint8_t type = data[pos++];
-    uint8_t valueLength = fieldLength - 1;
-    const uint8_t* value = &data[pos];
-    f.printf("  [%d] type 0x%02x (%s), len %u, value ", field, type,
-             getAdTypeName(type), valueLength);
-    writeHexData(f, value, valueLength);
-
-    if (type == 0x08 || type == 0x09) {
-      f.print(", text ");
-      writeAsciiData(f, value, valueLength);
-    } else if (type == 0x07 && valueLength % 16 == 0) {
-      f.print(", uuid");
-      if (valueLength > 16) {
-        f.print("s");
-      }
-      f.print(" ");
-      for (uint8_t offset = 0; offset < valueLength; offset += 16) {
-        if (offset > 0) {
-          f.print(", ");
-        }
-        writeUuid128Le(f, &value[offset]);
-      }
-    } else if (type == 0x12 && valueLength == 4) {
-      uint16_t minInterval =
-          static_cast<uint16_t>(value[0]) | static_cast<uint16_t>(value[1] << 8);
-      uint16_t maxInterval =
-          static_cast<uint16_t>(value[2]) | static_cast<uint16_t>(value[3] << 8);
-      f.printf(", interval units %u-%u", minInterval, maxInterval);
-    }
-
-    f.print("\n");
-    pos += valueLength;
-    field++;
-  }
-
-  if (field == 0 && length == 0) {
-    f.print("  none\n");
-  }
-}
-
-void statusDrivePlugged(uint32_t data) {
-  (void)data;
-  _statusDriveMounted = true;
-}
-
-void statusDriveUnplugged(uint32_t data) {
-  (void)data;
-  _statusDriveMounted = false;
-}
-
-// Generate the status text file
-void writeStatusToDisk(const char* chipID, const char* diagnosticsSnapshot) {
-  File f = LittleFS.open("/status.txt", "w");
-  if (!f) {
+  bool unchanged = existing && matched == contents.size() && !existing.available();
+  existing.close();
+  if (unchanged) {
     return;
   }
 
-  _statusDiskWriteCount++;
-  size_t len;
-  std::string versionString{reinterpret_cast<const char*>(GetResource_VERSION(&len)),
-                            len};
-  f.printf("Version: %s\n", versionString.c_str());
-  f.printf("Chip ID: %s\n", chipID);
-  f.printf("Status Update Count: %lu\n",
-           static_cast<unsigned long>(_statusDiskWriteCount));
-  f.printf("Status Uptime ms: %lu\n", static_cast<unsigned long>(millis()));
-  f.printf("USB Status Drive Mounted: %s\n",
-           _statusDriveMounted ? "yes" : "no");
-  f.printf("Firmware Loop: avg_us=%lu max_us=%lu samples=%lu\n",
-           static_cast<unsigned long>(_avgLoopTimeUs),
-           static_cast<unsigned long>(_maxLoopTimeUs),
-           static_cast<unsigned long>(_loopTimeMeasurementCount));
-  f.printf("Status Packet Cadence: built=%lu accepted=%lu rejected=%lu "
-           "last_build_gap_ms=%lu max_build_gap_ms=%lu "
-           "last_accept_gap_ms=%lu max_accept_gap_ms=%lu\n",
-           static_cast<unsigned long>(_statusPacketBuildCount),
-           static_cast<unsigned long>(_statusPacketAcceptedCount),
-           static_cast<unsigned long>(_statusPacketRejectedCount),
-           static_cast<unsigned long>(_lastStatusBuildIntervalMs),
-           static_cast<unsigned long>(_maxStatusBuildIntervalMs),
-           static_cast<unsigned long>(_lastStatusAcceptedIntervalMs),
-           static_cast<unsigned long>(_maxStatusAcceptedIntervalMs));
-  f.printf("Robot Control State: enabled=%s last_ctrl=0x%02x\n",
-           xrp::robotEnabled() ? "yes" : "no",
-           wpilibudp::lastControlByteReceived());
-  f.print("Encoder Raw Counts:");
-  for (int i = 0; i < 4; i++) {
-    f.printf(" e%d=%d", i, xrp::readEncoderRaw(i));
+  File file = LittleFS.open("/status.txt", "w");
+  if (!file) {
+    Serial.println("[STATUS] Failed to open status file for writing");
+    return;
   }
-  f.print("\n");
-  f.print("Encoder Raw Periods:");
-  for (int i = 0; i < 4; i++) {
-    f.printf(" e%d=0x%08lx", i,
-             static_cast<unsigned long>(xrp::readEncoderPeriod(i)));
+  size_t written = file.print(contents.c_str());
+  file.close();
+  if (written != contents.size()) {
+    Serial.println("[STATUS] Failed to write complete status file");
   }
-  f.print("\n");
-  f.printf("Config Version: %d\n", XRP_CONFIG_VERSION);
-  f.printf("Config File: %s\n", XRP_CONFIG_PATH);
-  f.printf("Transport: Bluetooth LE GATT + L2CAP Credit-Based Mode\n");
-  f.printf("Bluetooth Name: %s\n", BLUETOOTH_DEVICE_NAME);
-  f.printf("GATT Service UUID: %s\n", bluetooth_transport::GATT_SERVICE_UUID);
-  f.printf("GATT Control Characteristic UUID: %s\n",
-           bluetooth_transport::GATT_CONTROL_CHARACTERISTIC_UUID);
-  f.printf("GATT Status Characteristic UUID: %s\n",
-           bluetooth_transport::GATT_STATUS_CHARACTERISTIC_UUID);
-  f.printf("LE PSM: 0x%04x\n", bluetooth_transport::LE_PSM);
-  f.printf("Preferred Connection Interval: 7.5-15 ms, latency 0\n");
-  f.printf("Packet Framing: one BLE packet per WPILib XRP payload\n");
-
-  char localAddress[32];
-  bluetooth_transport::localAddress(localAddress, sizeof(localAddress));
-  const auto& advertisementDiagnostics =
-      bluetooth_transport::advertisementDiagnostics();
-  const auto& connectionDiagnostics =
-      bluetooth_transport::connectionDiagnostics();
-  f.print("\nBluetooth Diagnostics:\n");
-  f.printf("Bluetooth Diagnostics Snapshot: %s\n", diagnosticsSnapshot);
-  f.printf("BTstack HCI State: %s (%u)\n", bluetooth_transport::hciStateName(),
-           bluetooth_transport::hciState());
-  f.printf("Bluetooth Local Address: %s\n", localAddress);
-  f.printf("LE Connected: %s handle=0x%04x\n",
-           connectionDiagnostics.leConnected ? "yes" : "no",
-           connectionDiagnostics.leConnectionHandle);
-  f.printf("LE Connection Parameters: interval_units=%u interval_ms_x100=%u "
-           "latency=%u supervision_timeout_units=%u updates=%lu "
-           "last_disconnect_reason=0x%02x\n",
-           connectionDiagnostics.connectionInterval,
-           connectionDiagnostics.connectionInterval * 125,
-           connectionDiagnostics.connectionLatency,
-           connectionDiagnostics.connectionSupervisionTimeout,
-           static_cast<unsigned long>(connectionDiagnostics.connectionUpdates),
-           connectionDiagnostics.lastDisconnectReason);
-  f.printf("L2CAP Connected: %s cid=0x%04x remote_mtu=%u peer_credits=%u "
-           "can_send_now=%s\n",
-           connectionDiagnostics.l2capConnected ? "yes" : "no",
-           connectionDiagnostics.l2capChannelId,
-           connectionDiagnostics.l2capRemoteMtu,
-           connectionDiagnostics.l2capPeerCredits,
-           connectionDiagnostics.l2capCanSendNow ? "yes" : "no");
-  f.printf("L2CAP Packet Counters: status_queued=%lu requests=%lu "
-           "callbacks=%lu immediate=%lu sent=%lu drops=%lu last=0x%02x\n",
-           static_cast<unsigned long>(
-               connectionDiagnostics.l2capStatusPacketsQueued),
-           static_cast<unsigned long>(connectionDiagnostics.l2capCanSendRequests),
-           static_cast<unsigned long>(connectionDiagnostics.l2capCanSendCallbacks),
-           static_cast<unsigned long>(connectionDiagnostics.l2capImmediateSends),
-           static_cast<unsigned long>(connectionDiagnostics.l2capPacketsSent),
-           static_cast<unsigned long>(connectionDiagnostics.l2capSendDrops),
-           connectionDiagnostics.lastL2capSendResult);
-  f.printf("GATT Connected: %s handle=0x%04x payload_mtu=%u\n",
-           connectionDiagnostics.gattConnected ? "yes" : "no",
-           connectionDiagnostics.gattConnectionHandle,
-           connectionDiagnostics.gattPayloadMtu);
-  f.printf("GATT Handles: control=0x%04x status=0x%04x cccd=0x%04x\n",
-           connectionDiagnostics.gattControlValueHandle,
-           connectionDiagnostics.gattStatusValueHandle,
-           connectionDiagnostics.gattStatusCccHandle);
-  f.printf("GATT Notifications Enabled: %s\n",
-           connectionDiagnostics.gattNotificationsEnabled ? "yes" : "no");
-  f.printf("Transport State: active=%u tx=%u tx_pending=%s tx_requested=%s "
-           "rx_overflow=%s pending_age_us=%lu last_pending_us=%lu "
-           "max_pending_us=%lu\n",
-           connectionDiagnostics.activeTransport,
-           connectionDiagnostics.txTransport,
-           connectionDiagnostics.txPending ? "yes" : "no",
-           connectionDiagnostics.txCanSendRequested ? "yes" : "no",
-           connectionDiagnostics.rxOverflow ? "yes" : "no",
-           static_cast<unsigned long>(connectionDiagnostics.txPendingAgeUs),
-           static_cast<unsigned long>(
-               connectionDiagnostics.lastTxPendingDurationUs),
-           static_cast<unsigned long>(
-               connectionDiagnostics.maxTxPendingDurationUs));
-  f.printf("Transport Send Counters: attempts=%lu coalesced=%lu busy_drops=%lu "
-           "no_transport_drops=%lu invalid_size_drops=%lu last_size=%u\n",
-           static_cast<unsigned long>(connectionDiagnostics.statusSendAttempts),
-           static_cast<unsigned long>(connectionDiagnostics.statusSendCoalesced),
-           static_cast<unsigned long>(
-               connectionDiagnostics.statusSendBusyDrops),
-           static_cast<unsigned long>(
-               connectionDiagnostics.statusSendNoTransportDrops),
-           static_cast<unsigned long>(
-               connectionDiagnostics.statusSendInvalidSizeDrops),
-           connectionDiagnostics.lastStatusPacketSize);
-  f.printf("RX Queue: used=%u/%u max_used=%u queued=%lu dropped=%lu\n",
-           connectionDiagnostics.rxQueueUsed,
-           connectionDiagnostics.rxQueueDepth,
-           connectionDiagnostics.rxQueueMaxUsed,
-           static_cast<unsigned long>(connectionDiagnostics.rxPacketsQueued),
-           static_cast<unsigned long>(connectionDiagnostics.rxPacketsDropped));
-  f.printf("GATT Packet Counters: control_rx=%lu cccd_writes=%lu "
-           "status_queued=%lu status_blocked_notify=%lu "
-           "status_blocked_mtu=%lu notify_requests=%lu "
-           "notify_callbacks=%lu notify_immediate=%lu notify_sent=%lu "
-           "notify_drops=%lu last_status_size=%u\n",
-           static_cast<unsigned long>(
-               connectionDiagnostics.gattControlPacketsReceived),
-           static_cast<unsigned long>(connectionDiagnostics.gattCccdWrites),
-           static_cast<unsigned long>(
-               connectionDiagnostics.gattStatusPacketsQueued),
-           static_cast<unsigned long>(
-               connectionDiagnostics.gattStatusPacketsBlockedNotifications),
-           static_cast<unsigned long>(
-               connectionDiagnostics.gattStatusPacketsBlockedMtu),
-           static_cast<unsigned long>(
-               connectionDiagnostics.gattNotificationRequests),
-           static_cast<unsigned long>(
-               connectionDiagnostics.gattNotificationCallbacks),
-           static_cast<unsigned long>(
-               connectionDiagnostics.gattNotificationImmediateSends),
-           static_cast<unsigned long>(
-               connectionDiagnostics.gattNotificationsSent),
-           static_cast<unsigned long>(
-               connectionDiagnostics.gattNotificationDrops),
-           connectionDiagnostics.lastGattStatusPacketSize);
-  f.printf("GATT Last Notify Results: request=0x%02x notify=0x%02x\n",
-           connectionDiagnostics.lastGattNotifyRequestResult,
-           connectionDiagnostics.lastGattNotifyResult);
-  f.printf("Rejected Connections: le=%lu gatt=%lu l2cap=%lu\n",
-           static_cast<unsigned long>(connectionDiagnostics.rejectedLeConnections),
-           static_cast<unsigned long>(
-               connectionDiagnostics.rejectedGattConnections),
-           static_cast<unsigned long>(
-               connectionDiagnostics.rejectedL2capConnections));
-  f.printf("Advertising Data Applied After HCI Working: %s\n",
-           advertisementDiagnostics.appliedAfterHciWorking ? "yes" : "no");
-  f.printf("Advertising Data Length: %u/31\n",
-           advertisementDiagnostics.advertisingDataLength);
-  f.printf("Advertising Data Overflow: %s\n",
-           advertisementDiagnostics.advertisingDataOverflow ? "yes" : "no");
-  f.print("Advertising Data Hex: ");
-  writeHexData(f, advertisementDiagnostics.advertisingData,
-               advertisementDiagnostics.advertisingDataLength);
-  f.print("\n");
-  writeAdvertisementFields(f, "Advertising Data",
-                           advertisementDiagnostics.advertisingData,
-                           advertisementDiagnostics.advertisingDataLength);
-  f.printf("Scan Response Length: %u/31\n",
-           advertisementDiagnostics.scanResponseDataLength);
-  f.printf("Scan Response Overflow: %s\n",
-           advertisementDiagnostics.scanResponseDataOverflow ? "yes" : "no");
-  f.print("Scan Response Hex: ");
-  writeHexData(f, advertisementDiagnostics.scanResponseData,
-               advertisementDiagnostics.scanResponseDataLength);
-  f.print("\n");
-  writeAdvertisementFields(f, "Scan Response",
-                           advertisementDiagnostics.scanResponseData,
-                           advertisementDiagnostics.scanResponseDataLength);
-  f.close();
-}
-
-bool writeStatusToDiskSafely(const char* diagnosticsSnapshot) {
-  _lastStatusDiskWrite = millis();
-  // Flash writes delay Bluetooth callbacks and the output watchdog.
-  if (bluetooth_transport::connected() || xrp::robotEnabled()) {
-    return false;
-  }
-  bool wroteStatus = false;
-  noInterrupts();
-  if (!_statusDriveMounted) {
-    writeStatusToDisk(CHIP_ID, diagnosticsSnapshot);
-    wroteStatus = true;
-  }
-  interrupts();
-  return wroteStatus;
 }
 
 uint8_t handleBluetoothDeviceNameRequest(const char* deviceName,
@@ -459,33 +155,12 @@ bool shouldSendCommandAck(unsigned long now) {
 
 void sendStatusPacket(char* buffer, int size) {
   if (bluetooth_transport::sendPacket(buffer, size)) {
-    unsigned long statusAcceptedMs = millis();
-    if (_lastStatusAcceptedMs != 0) {
-      _lastStatusAcceptedIntervalMs =
-          statusAcceptedMs - _lastStatusAcceptedMs;
-      if (_lastStatusAcceptedIntervalMs > _maxStatusAcceptedIntervalMs) {
-        _maxStatusAcceptedIntervalMs = _lastStatusAcceptedIntervalMs;
-      }
-    }
-    _lastStatusAcceptedMs = statusAcceptedMs;
-    _statusPacketAcceptedCount++;
     seq++;
-  } else {
-    _statusPacketRejectedCount++;
   }
 }
 
 void sendData() {
   unsigned long statusBuildMs = millis();
-  if (_lastStatusBuildMs != 0) {
-    _lastStatusBuildIntervalMs = statusBuildMs - _lastStatusBuildMs;
-    if (_lastStatusBuildIntervalMs > _maxStatusBuildIntervalMs) {
-      _maxStatusBuildIntervalMs = _lastStatusBuildIntervalMs;
-    }
-  }
-  _lastStatusBuildMs = statusBuildMs;
-  _statusPacketBuildCount++;
-
   int size = 0;
   char buffer[512];
   int ptr = 0;
@@ -579,10 +254,6 @@ void sendData() {
 }
 
 void checkPrintStatus() {
-  if (millis() - _lastStatusDiskWrite >= STATUS_DISK_UPDATE_INTERVAL_MS) {
-    writeStatusToDiskSafely("periodic refresh");
-  }
-
   if (millis() - _lastMessageStatusPrint > 5000) {
     int usedHeap = rp2040.getUsedHeap();
     const auto& btDiag = bluetooth_transport::connectionDiagnostics();
@@ -641,9 +312,6 @@ void checkPrintStatus() {
 
 void updateLoopTime(unsigned long loopStart) {
   unsigned long loopTime = micros() - loopStart;
-  if (loopTime > _maxLoopTimeUs) {
-    _maxLoopTimeUs = loopTime;
-  }
   unsigned long totalTime = _avgLoopTimeUs * _loopTimeMeasurementCount;
   _loopTimeMeasurementCount++;
 
@@ -697,11 +365,11 @@ void setup() {
   Serial.println("[IMU] Beginning IMU calibration");
   xrp::imuCalibrate(5000);
 
+  // Update identification before Bluetooth callbacks or USB file reads can run.
+  updateStatusFile();
+
   // Setup Bluetooth transport
   setupBluetoothTransport();
-
-  // Write current status file
-  writeStatusToDiskSafely("startup");
 
   // NOTE: For now, we'll force init the reflectance sensor
   // TODO Enable this via configuration
@@ -714,8 +382,6 @@ void setup() {
   _lastMessageStatusPrint = millis();
   // Emulates a FAT-formatted USB stick
   // to allow txt file to be read if USB connected
-  singleFileDrive.onPlug(statusDrivePlugged);
-  singleFileDrive.onUnplug(statusDriveUnplugged);
   singleFileDrive.begin("status.txt", "XRP-Status.txt");
 }
 

@@ -23,6 +23,8 @@ Coverage includes:
 - the actual main loop during fast L2CAP reconnects with reused handles/CIDs,
   either LE/ATT event order, queued RX/TX, sequence zero before watchdog expiry,
   L2CAP-only closure, and disconnect without a new packet;
+- identification-file creation and content updates, skipping writes for matching
+  files, name refresh, and runtime diagnostics without filesystem writes;
 - output shutdown before rename writes, queued enables during the reboot
   delay, repeated ACK windows, and status encoding of encoder wrap/sentinels;
 - the actual bundled BTstack allocator with the project patch: 1,024 LE channel
