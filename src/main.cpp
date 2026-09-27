@@ -1,3 +1,5 @@
+#include "debug_log.h"
+
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <SingleFileDrive.h>
@@ -79,13 +81,13 @@ void updateStatusFile() {
 
   File file = LittleFS.open("/status.txt", "w");
   if (!file) {
-    Serial.println("[STATUS] Failed to open status file for writing");
+    debug_log::println("[STATUS] Failed to open status file for writing");
     return;
   }
   size_t written = file.print(contents.c_str());
   file.close();
   if (written != contents.size()) {
-    Serial.println("[STATUS] Failed to write complete status file");
+    debug_log::println("[STATUS] Failed to write complete status file");
   }
 }
 
@@ -98,7 +100,7 @@ uint8_t handleBluetoothDeviceNameRequest(const char* deviceName,
   std::string deviceNameSuffix =
       normalizeBluetoothDeviceNameSuffix(requestedDeviceName);
   if (!isValidBluetoothDeviceNameSuffix(deviceNameSuffix)) {
-    Serial.println("[CONFIG] Rejected Bluetooth rename request");
+    debug_log::println("[CONFIG] Rejected Bluetooth rename request");
     return wpilibudp::COMMAND_ACK_REJECTED;
   }
 
@@ -111,7 +113,7 @@ uint8_t handleBluetoothDeviceNameRequest(const char* deviceName,
                                        DEFAULT_BLUETOOTH_NAME_SUFFIX);
   interrupts();
   if (!saved) {
-    Serial.println("[CONFIG] Failed to save Bluetooth rename request");
+    debug_log::println("[CONFIG] Failed to save Bluetooth rename request");
     return wpilibudp::COMMAND_ACK_REJECTED;
   }
 
@@ -120,7 +122,7 @@ uint8_t handleBluetoothDeviceNameRequest(const char* deviceName,
   strncpy(BLUETOOTH_DEVICE_NAME, bluetoothDeviceName.c_str(),
           sizeof(BLUETOOTH_DEVICE_NAME) - 1);
   BLUETOOTH_DEVICE_NAME[sizeof(BLUETOOTH_DEVICE_NAME) - 1] = '\0';
-  Serial.printf("[CONFIG] Bluetooth name changed to %s; rebooting\n",
+  debug_log::log("[CONFIG] Bluetooth name changed to %s; rebooting\n",
                 BLUETOOTH_DEVICE_NAME);
 
   _restartRequested = true;
@@ -257,14 +259,15 @@ void checkPrintStatus() {
   if (millis() - _lastMessageStatusPrint > 5000) {
     int usedHeap = rp2040.getUsedHeap();
     const auto& btDiag = bluetooth_transport::connectionDiagnostics();
-    Serial.printf("t(ms):%u h:%d bt:%d lt(us):%u gatt:%d notify:%d "
+    const auto logCounts = debug_log::counters();
+    debug_log::log("t(ms):%lu h:%d bt:%d lt(us):%lu gatt:%d notify:%d "
                   "mtu:%u size:%u ctrl:%lu cccd:%lu q:%lu bN:%lu bM:%lu "
                   "req:%lu cb:%lu imm:%lu sent:%lu drop:%lu rx:%u/%u "
                   "rxmax:%u rxdrop:%lu l2q:%lu l2i:%lu l2s:%lu l2d:%lu "
                   "rej:%lu/%lu/%lu last:%02x/%02x/%02x "
                   "active:%u tx:%u pending:%d requested:%d pending_us:%lu "
-                  "l2cid:%04x credits:%u\n",
-                  millis(),
+                  "l2cid:%04x credits:%u log_drop:%lu log_supp:%lu log_trunc:%lu\n",
+                  static_cast<unsigned long>(millis()),
                   usedHeap,
                   bluetooth_transport::connected() ? 1 : 0,
                   _avgLoopTimeUs,
@@ -305,7 +308,10 @@ void checkPrintStatus() {
                   btDiag.txCanSendRequested ? 1 : 0,
                   static_cast<unsigned long>(btDiag.txPendingAgeUs),
                   btDiag.l2capChannelId,
-                  btDiag.l2capPeerCredits);
+                  btDiag.l2capPeerCredits,
+                  static_cast<unsigned long>(logCounts.dropped),
+                  static_cast<unsigned long>(logCounts.suppressed),
+                  static_cast<unsigned long>(logCounts.truncated));
     _lastMessageStatusPrint = millis();
   }
 }
@@ -321,7 +327,7 @@ void updateLoopTime(unsigned long loopStart) {
 void setupBluetoothTransport() {
   bluetooth_transport::begin(BLUETOOTH_DEVICE_NAME);
 
-  Serial.println("[BT] Bluetooth transport ready");
+  debug_log::println("[BT] Bluetooth transport ready");
 }
 
 void setup() {
@@ -359,10 +365,10 @@ void setup() {
   xrp::robotInit();
 
   // Initialize IMU
-  Serial.println("[IMU] Initializing IMU");
+  debug_log::println("[IMU] Initializing IMU");
   xrp::imuInit(IMU_I2C_ADDR, &MYWIRE);
 
-  Serial.println("[IMU] Beginning IMU calibration");
+  debug_log::println("[IMU] Beginning IMU calibration");
   xrp::imuCalibrate(5000);
 
   // Update identification before Bluetooth callbacks or USB file reads can run.
@@ -435,8 +441,9 @@ void loop() {
     sendData();
   }
 
-  updateLoopTime(loopStartTime);
   checkPrintStatus();
+  debug_log::drain();
+  updateLoopTime(loopStartTime);
 }
 
 void loop1() {

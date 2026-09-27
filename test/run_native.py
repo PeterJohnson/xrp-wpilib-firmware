@@ -24,6 +24,7 @@ flags = [
     "-I" + str(root / "test/native/stubs"), "-I" + str(root / "include"),
 ]
 suites = {
+    "debug_log": [],
     "protocol": ["src/wpilibudp.cpp", "src/byteutils.cpp", "src/watchdog.cpp",
                  "src/XRPServo.cpp"],
     "config": ["src/config.cpp"],
@@ -39,7 +40,9 @@ with tempfile.TemporaryDirectory(prefix="xrp-native-tests-") as build_dir:
         executable = str(Path(build_dir) / suite)
         command = compiler + flags + extra_flags + [
             str(root / ("test/native/" + suite + "_test.cpp")),
-            *(str(root / source) for source in sources), "-o", executable,
+            *(str(root / source) for source in sources),
+            str(root / "src/debug_log.cpp"), str(root / "src/debug_log_usb.cpp"),
+            "-o", executable,
         ]
         subprocess.run(command, check=True)
         subprocess.run([executable], check=True)

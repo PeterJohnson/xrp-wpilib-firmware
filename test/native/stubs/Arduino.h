@@ -6,7 +6,8 @@ using uint = unsigned;
 using boolean = bool;
 inline uint32_t testMicros = 1000000;
 inline uint32_t micros() { return testMicros; }
-inline uint32_t millis() { return testMicros / 1000; }
+inline uint32_t testMillisOffset = 0;
+inline uint32_t millis() { return testMillisOffset + testMicros / 1000; }
 inline bool testInterruptsEnabled = true;
 inline void noInterrupts() { testInterruptsEnabled = false; }
 inline void interrupts() { testInterruptsEnabled = true; }
@@ -21,9 +22,5 @@ struct pico_unique_board_id_t { uint8_t id[8]{}; };
 inline void pico_get_unique_board_id(pico_unique_board_id_t*) {}
 struct TestSerial {
   void begin(unsigned) {}
-  template <typename... T>
-  void printf(const char*, T...) {}
-  void print(const char*) {}
-  void println(const char*) {}
 };
 inline TestSerial Serial;

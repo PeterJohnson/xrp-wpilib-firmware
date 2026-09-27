@@ -1,3 +1,5 @@
+#include "debug_log.h"
+
 #include "bluetooth_transport.h"
 
 #include <Arduino.h>
@@ -313,7 +315,8 @@ void sendPendingL2capPacket() {
     ++connectionInfo.l2capPacketsSent;
   } else {
     ++connectionInfo.l2capSendDrops;
-    Serial.printf("[BT] L2CAP send failed: 0x%02x\n", result);
+    debug_log::logLimited(debug_log::Error::L2CAP_SEND,
+                          "[BT] L2CAP send failed: 0x%02x\n", result);
   }
   finishPendingTx();
 }
@@ -349,7 +352,8 @@ void sendPendingGattNotification() {
     ++connectionInfo.gattNotificationsSent;
   } else {
     ++connectionInfo.gattNotificationDrops;
-    Serial.printf("[BT] GATT notification send failed: 0x%02x\n", result);
+    debug_log::logLimited(debug_log::Error::GATT_SEND,
+                          "[BT] GATT notification send failed: 0x%02x\n", result);
   }
   finishPendingTx();
 }
@@ -410,7 +414,9 @@ void requestCanSend() {
     if (result != ERROR_CODE_SUCCESS &&
         result != ERROR_CODE_COMMAND_DISALLOWED) {
       gattCanSendRequested = false;
-      Serial.printf("[BT] GATT notification request failed: 0x%02x\n", result);
+      debug_log::logLimited(debug_log::Error::GATT_REQUEST,
+                            "[BT] GATT notification request failed: 0x%02x\n",
+                            result);
       ++connectionInfo.gattNotificationDrops;
       finishPendingTx();
     }
@@ -490,7 +496,7 @@ void startAdvertising(const char* reason) {
   configureAdvertisement(advertisedDeviceName,
                          hci_get_state() == HCI_STATE_WORKING);
   BTstack.startAdvertising();
-  Serial.printf("[BT] Advertising started (%s)\n", reason);
+  debug_log::log("[BT] Advertising started (%s)\n", reason);
 }
 
 void restartAdvertisingIfIdle(const char* reason) {
@@ -508,11 +514,11 @@ void disconnectHandle(hci_con_handle_t handle, const char* reason) {
     return;
   }
 
-  Serial.printf("[BT] Disconnecting LE link handle=0x%04x (%s)\n",
+  debug_log::log("[BT] Disconnecting LE link handle=0x%04x (%s)\n",
                 handle, reason);
   uint8_t result = gap_disconnect(handle);
   if (result != ERROR_CODE_SUCCESS && result != ERROR_CODE_COMMAND_DISALLOWED) {
-    Serial.printf("[BT] LE disconnect request failed: 0x%02x\n", result);
+    debug_log::log("[BT] LE disconnect request failed: 0x%02x\n", result);
   }
 }
 
@@ -540,7 +546,7 @@ void handleLeConnected(hci_con_handle_t handle, uint16_t interval,
                        const char* eventName) {
   if (isForeignLeHandle(handle)) {
     ++connectionInfo.rejectedLeConnections;
-    Serial.printf(
+    debug_log::log(
         "[BT] Rejecting extra LE connection handle=0x%04x "
         "active=0x%04x\n",
         handle, leConnectionHandle);
@@ -550,7 +556,7 @@ void handleLeConnected(hci_con_handle_t handle, uint16_t interval,
 
   if (handle == leConnectionHandle) {
     recordConnectionParameters(interval, latency, supervisionTimeout);
-    Serial.printf("[BT] Duplicate LE connected event handle=0x%04x (%s)\n",
+    debug_log::log("[BT] Duplicate LE connected event handle=0x%04x (%s)\n",
                   handle, eventName);
     return;
   }
@@ -561,7 +567,7 @@ void handleLeConnected(hci_con_handle_t handle, uint16_t interval,
   clearL2capConnection();
   clearGattConnection();
   clearRxQueue();
-  Serial.printf("[BT] LE connected handle=0x%04x (%s)\n", handle, eventName);
+  debug_log::log("[BT] LE connected handle=0x%04x (%s)\n", handle, eventName);
 }
 
 uint16_t handleGattRead(hci_con_handle_t handle, uint16_t attributeHandle,
@@ -600,7 +606,7 @@ int handleGattWrite(hci_con_handle_t handle, uint16_t attributeHandle,
     // Preserve the existing control-traffic notification fallback.
     if (!gattNotificationsEnabled) {
       gattNotificationsEnabled = true;
-      Serial.println("[BT] GATT status notifications enabled by control traffic");
+      debug_log::println("[BT] GATT status notifications enabled by control traffic");
     }
     queueIncomingPacket(buffer, bufferSize, Transport::TRANSPORT_GATT);
     requestCanSend();
@@ -619,7 +625,7 @@ int handleGattWrite(hci_con_handle_t handle, uint16_t attributeHandle,
     }
     ++connectionInfo.gattCccdWrites;
     gattNotificationsEnabled = configuration != 0;
-    Serial.printf("[BT] GATT status notifications %s\n",
+    debug_log::log("[BT] GATT status notifications %s\n",
                   gattNotificationsEnabled ? "enabled" : "disabled");
     if (!gattNotificationsEnabled) {
       clearPendingTxFor(Transport::TRANSPORT_GATT);
@@ -667,7 +673,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
           hci_con_handle_t handle =
               hci_event_disconnection_complete_get_connection_handle(packet);
           uint8_t reason = hci_event_disconnection_complete_get_reason(packet);
-          Serial.printf("[BT] LE disconnected handle=0x%04x reason=0x%02x\n",
+          debug_log::log("[BT] LE disconnected handle=0x%04x reason=0x%02x\n",
                         handle, reason);
           if (handle == leConnectionHandle) {
             connectionInfo.lastDisconnectReason = reason;
@@ -752,7 +758,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
                     hci_subevent_le_connection_update_complete_get_supervision_timeout(
                         packet));
                 ++connectionInfo.connectionUpdates;
-                Serial.printf(
+                debug_log::log(
                     "[BT] Connection interval now %u units, latency %u\n",
                     connectionInfo.connectionInterval,
                     connectionInfo.connectionLatency);
@@ -768,7 +774,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
           hci_con_handle_t handle = att_event_connected_get_handle(packet);
           if (isForeignLeHandle(handle) || isForeignGattHandle(handle)) {
             ++connectionInfo.rejectedGattConnections;
-            Serial.printf(
+            debug_log::log(
                 "[BT] Rejecting extra GATT connection handle=0x%04x "
                 "active_le=0x%04x active_gatt=0x%04x\n",
                 handle, leConnectionHandle, gattConnectionHandle);
@@ -781,7 +787,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
           }
           gattConnectionHandle = handle;
           updateGattPayloadMtu(att_server_get_mtu(gattConnectionHandle));
-          Serial.printf("[BT] GATT connected handle=0x%04x mtu_payload=%u\n",
+          debug_log::log("[BT] GATT connected handle=0x%04x mtu_payload=%u\n",
                         gattConnectionHandle, currentGattPayloadMtu());
           break;
         }
@@ -789,7 +795,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
         case ATT_EVENT_DISCONNECTED: {
           hci_con_handle_t handle = att_event_disconnected_get_handle(packet);
           if (handle == gattConnectionHandle) {
-            Serial.println("[BT] GATT disconnected");
+            debug_log::println("[BT] GATT disconnected");
             clearGattConnection();
           }
           restartAdvertisingIfIdle("GATT disconnect");
@@ -802,7 +808,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
           if (handle == gattConnectionHandle) {
             updateGattPayloadMtu(
                 att_event_mtu_exchange_complete_get_MTU(packet));
-            Serial.printf("[BT] GATT MTU payload=%u\n",
+            debug_log::log("[BT] GATT MTU payload=%u\n",
                           currentGattPayloadMtu());
           }
           break;
@@ -820,7 +826,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
 
           if (isForeignLeHandle(handle)) {
             ++connectionInfo.rejectedL2capConnections;
-            Serial.printf(
+            debug_log::log(
                 "[BT] Declining L2CAP CBM connection from extra LE "
                 "handle=0x%04x active=0x%04x cid=0x%04x\n",
                 handle, leConnectionHandle, localCid);
@@ -832,7 +838,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
 
           if (l2capChannelId != 0 || pendingL2capChannelId != 0) {
             ++connectionInfo.rejectedL2capConnections;
-            Serial.printf(
+            debug_log::log(
                 "[BT] Declining extra L2CAP CBM connection cid=0x%04x "
                 "active=0x%04x\n",
                 localCid, l2capChannelId);
@@ -841,7 +847,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
             break;
           }
 
-          Serial.printf(
+          debug_log::log(
               "[BT] Accepting L2CAP CBM connection cid=0x%04x psm=0x%04x\n",
               localCid, psm);
           // Reserve our single receive buffer before accept: opening may be
@@ -852,7 +858,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
               INITIAL_CREDITS);
           if (result != ERROR_CODE_SUCCESS) {
             pendingL2capChannelId = 0;
-            Serial.printf("[BT] L2CAP accept failed: 0x%02x\n", result);
+            debug_log::log("[BT] L2CAP accept failed: 0x%02x\n", result);
           }
           break;
         }
@@ -867,7 +873,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
             pendingL2capChannelId = 0;
           }
           if (status != ERROR_CODE_SUCCESS) {
-            Serial.printf("[BT] L2CAP CBM open failed: 0x%02x\n", status);
+            debug_log::log("[BT] L2CAP CBM open failed: 0x%02x\n", status);
             if (localCid == l2capChannelId) {
               clearL2capConnection();
             }
@@ -876,7 +882,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
 
           if (isForeignLeHandle(handle)) {
             ++connectionInfo.rejectedL2capConnections;
-            Serial.printf(
+            debug_log::log(
                 "[BT] Closing L2CAP channel from extra LE handle=0x%04x "
                 "active=0x%04x cid=0x%04x\n",
                 handle, leConnectionHandle, localCid);
@@ -887,7 +893,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
 
           if (l2capChannelId != 0 && localCid != l2capChannelId) {
             ++connectionInfo.rejectedL2capConnections;
-            Serial.printf(
+            debug_log::log(
                 "[BT] Closing extra L2CAP channel cid=0x%04x "
                 "active=0x%04x\n",
                 localCid, l2capChannelId);
@@ -903,7 +909,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
           l2capRemoteMtu =
               l2cap_event_cbm_channel_opened_get_remote_mtu(packet);
 
-          Serial.printf(
+          debug_log::log(
               "[BT] L2CAP CBM channel open cid=0x%04x remote_mtu=%u\n",
               l2capChannelId, l2capRemoteMtu);
           requestCanSend();
@@ -916,7 +922,7 @@ void packetHandler(uint8_t packetType, uint16_t channel, uint8_t* packet,
             pendingL2capChannelId = 0;
           }
           bool wasPacketChannel = closedCid == l2capChannelId;
-          Serial.printf("[BT] L2CAP channel closed cid=0x%04x\n", closedCid);
+          debug_log::log("[BT] L2CAP channel closed cid=0x%04x\n", closedCid);
           if (wasPacketChannel) {
             ++connectionGeneration;
             clearRxQueue();
@@ -978,13 +984,13 @@ void begin(const char* deviceName) {
 
   uint8_t result = l2cap_cbm_register_service(&packetHandler, LE_PSM, LEVEL_0);
   if (result != ERROR_CODE_SUCCESS) {
-    Serial.printf("[BT] Failed to register L2CAP CBM service: 0x%02x\n",
+    debug_log::log("[BT] Failed to register L2CAP CBM service: 0x%02x\n",
                   result);
   }
 
   startAdvertising("startup");
 
-  Serial.printf("[BT] Advertising %s, GATT %s, L2CAP LE PSM 0x%04x\n",
+  debug_log::log("[BT] Advertising %s, GATT %s, L2CAP LE PSM 0x%04x\n",
                 deviceName, GATT_SERVICE_UUID, LE_PSM);
 }
 

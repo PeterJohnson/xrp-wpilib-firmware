@@ -5,10 +5,12 @@
 #include "bluetooth_transport.h"
 #include "byteutils.h"
 #include "config.h"
+#include "debug_log.h"
 #include "imu.h"
 #include "LittleFS.h"
 #include "robot.h"
 #include "wpilibudp.h"
+#include "tusb.h"
 
 void loop();
 void sendData();
@@ -593,6 +595,37 @@ int main() {
   control(0, 0);
   loop();
   assert(!xrp::testRobotEnabled && wpilibudp::dsWatchdogActive());
+
+  // A stalled USB reader and a full log queue cannot prevent motor commands
+  // from being processed or prevent the watchdog from disabling outputs.
+  testUsbConnected = true;
+  testUsbSpace = 0;
+  for (size_t i = 0; i < debug_log::QUEUE_CAPACITY; ++i) {
+    debug_log::print("x");
+  }
+  auto droppedLogs = debug_log::counters().dropped;
+  debug_log::println("stalled reader");
+  assert(debug_log::counters().dropped == droppedLogs + 1);
+  auto usbWrites = testUsbWrites;
+  receive({0, 1, 1, 0, 1, 0, 127});  // Enable and set motor 0 to 127.
+  loop();
+  assert(xrp::testRobotEnabled && xrp::testPwm[0] == 127.0 / 255.0);
+  assert(wpilibudp::dsWatchdogActive());
+  assert(testUsbWrites == usbWrites);
+  testMicros += 600000;
+  loop();
+  assert(!xrp::testRobotEnabled && !xrp::testImuEnabled);
+  assert(!wpilibudp::dsWatchdogActive() && testUsbWrites == usbWrites);
+
+  // USB drain happens after watchdog shutdown, even when the sink recovers.
+  testUsbSpace = 256;
+  testDuringUsbWrite = [] {
+    assert(!xrp::testRobotEnabled && !xrp::testImuEnabled);
+  };
+  loop();
+  testDuringUsbWrite = nullptr;
+  assert(testUsbWrites == usbWrites + 1);
+  testUsbConnected = false;
 
   // Test the status encoder path in main.cpp, including signed wrap and the
   // invalid period sentinel before left-encoder direction reversal.

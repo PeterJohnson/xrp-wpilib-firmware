@@ -11,6 +11,11 @@ radio implementations. AddressSanitizer and UndefinedBehaviorSanitizer errors
 fail the run. CI runs these tests after building both firmware targets.
 
 Coverage includes:
+- bounded diagnostic logging with a disconnected or stalled USB host, a busy
+  USB mutex, partial writes, ring wraparound, full queues, reentrant callers,
+  message truncation, and per-category rate limiting across clock rollover;
+- motor-command processing and watchdog shutdown with a full diagnostic queue
+  and stalled USB reader, and USB draining after control processing;
 - packet lengths, all fixed-field masks, duplicate/stale sequences, rollover,
   arbitrary initial sequences, watchdog resets, and rename ACK/timing echoes;
 - degree-to-servo round trips and analog/encoder boundary values;
@@ -41,5 +46,14 @@ Hardware retest (native tests cannot reproduce controller/OS radio timing):
    and reconnect should work under the new name after reboot.
 5. Smoke-test GATT, including notification disable/re-enable and reconnect.
 
-The current modular sequence comparison and automatic GATT notification
-fallback are intentionally retained from HEAD; fdd9782 is not reapplied whole.
+The protocol uses modular sequence comparisons and automatically enables GATT
+notifications when control traffic arrives.
+
+Serial latency retest:
+1. Capture USB Serial during normal control traffic and verify the periodic
+   summaries and connection events arrive without per-packet logging.
+2. Leave the serial port open while pausing host reads long enough for USB
+   buffers to fill. Confirm motor commands remain responsive and the watchdog
+   disables outputs when control traffic stops.
+3. Resume reading and check log_drop/log_supp counters. Repeat with USB
+   unplugged and during repeated Bluetooth connection failures.

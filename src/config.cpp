@@ -1,3 +1,5 @@
+#include "debug_log.h"
+
 #include "config.h"
 
 #include <Arduino.h>
@@ -151,7 +153,7 @@ bool writeConfigToDisk(const XRPConfiguration& config,
   std::string contents = config.toIniString(defaultBluetoothNameSuffix);
   File f = LittleFS.open(temporaryPath, "w");
   if (!f) {
-    Serial.println("[CONFIG] Failed to open config file for writing");
+    debug_log::println("[CONFIG] Failed to open config file for writing");
     return false;
   }
 
@@ -166,7 +168,7 @@ bool writeConfigToDisk(const XRPConfiguration& config,
     return true;
   }
   LittleFS.remove(temporaryPath);
-  Serial.println("[CONFIG] Failed to save config file");
+  debug_log::println("[CONFIG] Failed to save config file");
   return false;
 }
 
@@ -241,7 +243,7 @@ bool parseConfigIni(const std::string& contents,
             config->bluetoothConfig.deviceNameSuffix =
                 configuredDeviceNameSuffix;
           } else {
-            Serial.println(
+            debug_log::println(
                 "[CONFIG] Invalid Bluetooth device name. Using default");
             config->bluetoothConfig.deviceNameSuffix =
                 defaultBluetoothNameSuffix;
@@ -347,7 +349,7 @@ XRPConfiguration loadConfiguration(
     const std::string& defaultBluetoothNameSuffix) {
   File f = LittleFS.open(XRP_CONFIG_PATH, "r");
   if (!f) {
-    Serial.println("[CONFIG] No config file found. Creating default");
+    debug_log::println("[CONFIG] No config file found. Creating default");
     return resetToDefaultConfig(defaultBluetoothNameSuffix);
   }
 
@@ -359,9 +361,9 @@ XRPConfiguration loadConfiguration(
   std::string error;
   if (!parseConfigIni(contents, defaultBluetoothNameSuffix, &config,
                       &shouldWrite, &error)) {
-    Serial.print("[CONFIG] Invalid config file: ");
-    Serial.println(error.c_str());
-    Serial.println("[CONFIG] Using default");
+    debug_log::print("[CONFIG] Invalid config file: ");
+    debug_log::println(error.c_str());
+    debug_log::println("[CONFIG] Using default");
     return resetToDefaultConfig(defaultBluetoothNameSuffix);
   }
 
