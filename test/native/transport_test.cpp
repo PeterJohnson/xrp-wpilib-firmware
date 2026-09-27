@@ -637,6 +637,32 @@ int main() {
   assert(networkToUInt32(status, 9) == UINT32_MAX);
   assert(LittleFS.writeOpens == writes);
 
+  // Identify works while disabled and its ACK does not interrupt telemetry.
+  auto normalStatusSize = sentL2cap.back().size();
+  auto identifyCalls = xrp::testIdentifyCalls;
+  receive({0x12, 0x34, 1, 0x40, 0});
+  loop();
+  assert(xrp::testIdentifyCalls == identifyCalls + 1);
+  assert(!xrp::testRobotEnabled && !wpilibudp::dsWatchdogActive());
+  assert(!_restartRequested && LittleFS.writeOpens == writes);
+  sendData();
+  completeL2cap();
+  assert(sentL2cap.back().size() == normalStatusSize + 5);
+  status = reinterpret_cast<char*>(sentL2cap.back().data());
+  auto statusMask = networkToUInt16(status, 3);
+  assert((statusMask & wpilibudp::STATUS_COMMAND_ACK) != 0);
+  assert((statusMask & wpilibudp::STATUS_ENCODER_0) != 0);
+  assert((statusMask & wpilibudp::STATUS_TIMING) != 0);
+  auto ackOffset = sentL2cap.back().size() - 5;
+  assert(networkToUInt16(status, ackOffset) == 0x1234);
+  assert(networkToUInt16(status, ackOffset + 2) == wpilibudp::CONTROL_IDENTIFY);
+  assert(status[ackOffset + 4] == wpilibudp::COMMAND_ACK_SUCCESS);
+  testMicros += 500000;
+  sendData();
+  completeL2cap();
+  assert(sentL2cap.back().size() == normalStatusSize);
+  assert(!wpilibudp::commandAckPending());
+
   // Each new ACK gets the full repeat interval, including a new command near
   // expiry of a previous NACK. Failed saves must leave outputs disabled.
   std::strcpy(DEFAULT_BLUETOOTH_NAME_SUFFIX, "AAAA-BBBB");

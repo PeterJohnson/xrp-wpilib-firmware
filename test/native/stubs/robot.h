@@ -3,6 +3,8 @@
 #include <limits>
 namespace xrp {
 inline bool testRobotEnabled = false;
+inline unsigned testIdentifyCalls = 0;
+inline void identifyRobot() { ++testIdentifyCalls; }
 inline double testPwm[8]{};
 inline bool testDio[8]{};
 inline unsigned testEnableCalls = 0;

@@ -25,6 +25,7 @@ flags = [
 ]
 suites = {
     "debug_log": [],
+    "identify_led": [],
     "protocol": ["src/wpilibudp.cpp", "src/byteutils.cpp", "src/watchdog.cpp",
                  "src/XRPServo.cpp"],
     "config": ["src/config.cpp"],

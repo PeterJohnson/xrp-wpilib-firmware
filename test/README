@@ -11,6 +11,9 @@ radio implementations. AddressSanitizer and UndefinedBehaviorSanitizer errors
 fail the run. CI runs these tests after building both firmware targets.
 
 Coverage includes:
+- identify LED timing, restoration of DIO state, repeated requests, and clock
+  rollover; identify packet validation, sequencing, watchdog isolation, and
+  command acknowledgements alongside sensor telemetry;
 - bounded diagnostic logging with a disconnected or stalled USB host, a busy
   USB mutex, partial writes, ring wraparound, full queues, reentrant callers,
   message truncation, and per-category rate limiting across clock rollover;
@@ -57,3 +60,10 @@ Serial latency retest:
    disables outputs when control traffic stops.
 3. Resume reading and check log_drop/log_supp counters. Repeat with USB
    unplugged and during repeated Bluetooth connection failures.
+
+Identify retest:
+1. Connect with matching client and firmware builds and press Identify while
+   disabled. Check for five seconds of LED flashing without enabling outputs.
+2. Change DIO 1 during the flash and confirm that value is restored afterward.
+3. Press Identify again during a flash to restart it. Disconnect during a flash
+   and confirm it still finishes locally. Check sensor updates during the flash.

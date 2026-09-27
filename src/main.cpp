@@ -173,7 +173,8 @@ void sendData() {
   buffer[2] = wpilibudp::lastControlByteReceived();
   ptr = wpilibudp::PACKET_HEADER_SIZE;
 
-  if (sendCommandAck) {
+  if (sendCommandAck &&
+      wpilibudp::commandAckFieldMask() == wpilibudp::CONTROL_DEVICE_NAME) {
     fieldMask |= wpilibudp::STATUS_COMMAND_ACK;
     ptr += wpilibudp::writeCommandAckData(buffer, ptr);
     uint16ToNetwork(fieldMask, buffer, 3);
@@ -247,6 +248,10 @@ void sendData() {
 
   fieldMask |= wpilibudp::STATUS_TIMING;
   ptr += wpilibudp::writeTimingData(buffer, ptr);
+  if (sendCommandAck) {
+    fieldMask |= wpilibudp::STATUS_COMMAND_ACK;
+    ptr += wpilibudp::writeCommandAckData(buffer, ptr);
+  }
   uint16ToNetwork(fieldMask, buffer, 3);
 
   // ptr should now point to 1 past the last byte

@@ -1,6 +1,7 @@
 #include "debug_log.h"
 
 #include "robot.h"
+#include "identify_led.h"
 #include "wpilibudp.h"
 #include "encoder.h"
 #include "XRPServo.h"
@@ -14,6 +15,16 @@ namespace xrp {
 
 bool _robotInitialized = false;
 bool _robotEnabled = false;
+IdentifyLed _identifyLed;
+bool _ledOutput = false;
+
+void updateLed() {
+  bool value = _identifyLed.value(millis());
+  if (value != _ledOutput) {
+    _ledOutput = value;
+    digitalWrite(XRP_BUILTIN_LED, value ? HIGH : LOW);
+  }
+}
 unsigned long _lastRobotPeriodicCall = 0;
 
 // Digital IO
@@ -231,6 +242,7 @@ uint8_t robotPeriodic() {
   }
 
   _updateEncoders();
+  updateLed();
 
   // Only check if user button pressed at the less frequent interval
   if (millis() - _lastRobotPeriodicCall < MIN_UPDATE_TIME_MS) return ret;
@@ -308,9 +320,14 @@ void setPwmValue(int wpilibChannel, double value) {
 
 void setDigitalOutput(int channel, bool value) {
   if (channel == 1) {
-    // LED
-    digitalWrite(XRP_BUILTIN_LED, value ? HIGH : LOW);
+    _identifyLed.set(value);
+    updateLed();
   }
+}
+
+void identifyRobot() {
+  _identifyLed.start(millis());
+  updateLed();
 }
 
 void reflectanceInit() {
