@@ -64,6 +64,12 @@ bool _initEncoders() {
   return true;
 }
 
+void _enableEncoders() {
+  for(auto& encoder : encoders) {
+    encoder.enable();
+  }
+}
+
 int _updateEncoders() {
   int count = 0;
   for(int i=0; i < NUM_OF_ENCODERS; ++i) {
@@ -193,6 +199,8 @@ void robotInit() {
   debug_log::println("[XRP] Initializing Encoders");
   if (!_initEncoders()) {
     debug_log::println("  - ERROR");
+  } else {
+    _enableEncoders();
   }
 
   // Set up the motors
@@ -250,9 +258,6 @@ void robotSetEnabled(bool enabled) {
   // Prevent motors from starting with arbitrary values when enabling
   if (!_robotEnabled && enabled) {
     _pwmShutoff();
-    for(auto& encoder : encoders) {
-      encoder.enable();
-    }
   }
 
   bool prevEnabledValue = _robotEnabled;
@@ -261,9 +266,6 @@ void robotSetEnabled(bool enabled) {
   if (prevEnabledValue && !enabled) {
     _pwmShutoff();
     debug_log::println("[XRP] Disabling");
-    for(auto& encoder : encoders) {
-      encoder.disable();
-    }
   }
   else if (!prevEnabledValue && enabled) {
     debug_log::println("[XRP] Enabling");
