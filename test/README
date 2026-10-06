@@ -2,7 +2,10 @@ Run host regressions from the repository root:
 
     python3 test/run_native.py
 
-Requires g++ (or CXX). Tests use fake hardware. AddressSanitizer and UndefinedBehaviorSanitizer errors
+Requires g++ (or CXX), gcc (or CC), and the Arduino-Pico framework installed
+by `pio run`.
+Set ARDUINO_PICO_DIR when the framework is installed outside the default
+~/.platformio/packages/framework-arduinopico directory. Tests use fake hardware and the bundled BTstack source. AddressSanitizer and UndefinedBehaviorSanitizer errors
 fail the run. CI runs these tests after building both firmware targets.
 
 Coverage includes:
@@ -12,3 +15,5 @@ Coverage includes:
 - packet lengths, all fixed-field masks, duplicate/stale sequences, rollover,
   arbitrary initial sequences, watchdog resets, and control timing echoes;
 - degree-to-servo round trips and analog/encoder boundary values;
+- the actual bundled BTstack allocator with the project patch: 1,024 LE channel
+  allocations, wraparound at 0x007f, occupied channels, and Classic/LE interleaving.

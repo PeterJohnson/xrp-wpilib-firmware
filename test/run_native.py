@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""Run host regression tests with sanitizers."""
+"""Run host regression tests with sanitizers and the installed BTstack headers."""
 import os
 from pathlib import Path
 import shlex
+import runpy
 import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parent.parent
+framework = Path(os.environ.get(
+    "ARDUINO_PICO_DIR",
+    str(Path.home() / ".platformio/packages/framework-arduinopico"),
+))
+btstack = framework / "pico-sdk/lib/btstack/src"
+if not (btstack / "l2cap.h").exists():
+    raise SystemExit("Run 'pio run' first, or set ARDUINO_PICO_DIR to the Arduino-Pico framework directory.")
+
 compiler = shlex.split(os.environ.get("CXX", "g++"))
 flags = [
     "-std=c++17", "-g", "-O1", "-Wall", "-Wextra", "-Werror",
@@ -35,3 +44,24 @@ with tempfile.TemporaryDirectory(prefix="xrp-native-tests-") as build_dir:
         ]
         subprocess.run(command, check=True)
         subprocess.run([executable], check=True)
+
+# Compile the same patched BTstack source used by the firmware. Unused radio
+# functions are discarded by the linker; allocation and channel lookup are real.
+patch_l2cap = runpy.run_path(str(root / "tools/btstack_l2cap.py"))["patch_l2cap"]
+with tempfile.TemporaryDirectory(prefix="xrp-btstack-tests-") as build_dir:
+    generated = Path(build_dir) / "l2cap.c"
+    generated.write_text(patch_l2cap((btstack / "l2cap.c").read_text()))
+    executable = str(Path(build_dir) / "l2cap_cid")
+    command = shlex.split(os.environ.get("CC", "gcc")) + [
+        "-std=c11", "-g", "-O1", "-Wall", "-Wextra",
+        "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
+        "-fno-omit-frame-pointer", "-ffunction-sections", "-fdata-sections",
+        "-Wl,--gc-sections", "-DENABLE_BLE", "-DENABLE_CLASSIC",
+        "-I" + build_dir, "-isystem", str(btstack),
+        "-isystem", str(framework / "include/rp2040"),
+        str(root / "test/native/l2cap_cid_test.c"),
+        str(btstack / "btstack_linked_list.c"), str(btstack / "btstack_util.c"),
+        "-o", executable,
+    ]
+    subprocess.run(command, check=True)
+    subprocess.run([executable], check=True)
