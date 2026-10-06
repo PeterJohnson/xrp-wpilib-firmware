@@ -25,6 +25,7 @@ flags = [
 ]
 suites = {
     "debug_log": [],
+    "identify_led": [],
     "protocol": [
         "src/wpilib_protocol.cpp",
         "src/byteutils.cpp",

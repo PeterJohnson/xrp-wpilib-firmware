@@ -201,7 +201,14 @@ bool processPacket(char* buffer, int size) {
     return processDeviceNamePacket(buffer, size, seq);
   }
 
-  if (hasField(fieldMask, CONTROL_DEVICE_NAME) ||
+  if (fieldMask == CONTROL_IDENTIFY) {
+    if (size != PACKET_HEADER_SIZE || !acceptSequence(seq)) return false;
+    xrp::identifyRobot();
+    queueCommandAck(seq, CONTROL_IDENTIFY, COMMAND_ACK_SUCCESS);
+    return true;
+  }
+
+  if (hasField(fieldMask, CONTROL_DEVICE_NAME | CONTROL_IDENTIFY) ||
       size != expectedControlPacketSize(fieldMask)) {
     return false;
   }

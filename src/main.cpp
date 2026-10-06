@@ -173,7 +173,8 @@ void sendData() {
   buffer[2] = wpilib_protocol::lastControlByteReceived();
   ptr = wpilib_protocol::PACKET_HEADER_SIZE;
 
-  if (sendCommandAck) {
+  if (sendCommandAck &&
+      wpilib_protocol::commandAckFieldMask() == wpilib_protocol::CONTROL_DEVICE_NAME) {
     fieldMask |= wpilib_protocol::STATUS_COMMAND_ACK;
     ptr += wpilib_protocol::writeCommandAckData(buffer, ptr);
     uint16ToNetwork(fieldMask, buffer, 3);
@@ -247,6 +248,10 @@ void sendData() {
 
   fieldMask |= wpilib_protocol::STATUS_TIMING;
   ptr += wpilib_protocol::writeTimingData(buffer, ptr);
+  if (sendCommandAck) {
+    fieldMask |= wpilib_protocol::STATUS_COMMAND_ACK;
+    ptr += wpilib_protocol::writeCommandAckData(buffer, ptr);
+  }
   uint16ToNetwork(fieldMask, buffer, 3);
 
   // ptr should now point to 1 past the last byte

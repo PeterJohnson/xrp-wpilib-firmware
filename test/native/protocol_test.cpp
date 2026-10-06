@@ -111,6 +111,37 @@ int main() {
     assert(process(packet(0)));
   }
 
+  // Identify is a sequenced command, not a motor enable or watchdog feed.
+  resetState();
+  clearCommandAck();
+  xrp::robotSetEnabled(false);
+  auto identifyCalls = xrp::testIdentifyCalls;
+  assert(!process(packet(100, CONTROL_IDENTIFY, {0})));
+  assert(!process(packet(100, CONTROL_IDENTIFY | CONTROL_MOTOR_0, {0, 127})));
+  assert(!process(packet(100, CONTROL_IDENTIFY | CONTROL_DEVICE_NAME, {1, 'A'})));
+  assert(xrp::testIdentifyCalls == identifyCalls);
+  assert(process(packet(100, CONTROL_IDENTIFY)));
+  assert(xrp::testIdentifyCalls == identifyCalls + 1);
+  assert(!xrp::testRobotEnabled && !dsWatchdogActive());
+  assert(commandAckFieldMask() == CONTROL_IDENTIFY);
+  assert(writeCommandAckData(ack) == 5);
+  assert(networkToUInt16(ack) == 100);
+  assert(networkToUInt16(ack, 2) == CONTROL_IDENTIFY);
+  assert(static_cast<uint8_t>(ack[4]) == COMMAND_ACK_SUCCESS);
+  assert(!process(packet(100, CONTROL_IDENTIFY)));
+  assert(!process(packet(99, CONTROL_IDENTIFY)));
+  assert(xrp::testIdentifyCalls == identifyCalls + 1);
+  assert(process(packet(101, CONTROL_MOTOR_0, {0, 127})));
+  testMicros += 400000;
+  assert(process(packet(102, CONTROL_IDENTIFY, {}, 0)));
+  assert(xrp::testRobotEnabled && xrp::testPwm[0] == 127.0 / 255.0);
+  writeTimingData(timing);
+  assert(networkToUInt16(timing) == 101);
+  assert(networkToUInt16(timing, 2) == 40000);
+  testMicros += 100000;
+  assert(!dsWatchdogActive());
+  clearCommandAck();
+
   // Check actual big-endian wire bytes and normalized sensor boundaries.
   char encoded[8];
   assert(writeEncoderData(-2, 21, 2000000, encoded) == 8);
