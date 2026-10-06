@@ -1,107 +1,163 @@
+#include <Arduino.h>
+
 #include "byteutils.h"
 #include "wpilib_protocol.h"
 #include "robot.h"
 #include "watchdog.h"
-#include "imu.h"
-
-// Since we might (nay, will) rollover, the fudge factor lets us deal with cases like
-// 65532, 65533, 0, 65534, 65535 by taking 0 as the new highest seq number
-#define SEQ_FUDGE_FACTOR 5
-#define SEQ_MAX 65535
 
 namespace wpilib_protocol {
 
 uint16_t currMaxSeq = 0;
+bool haveCurrMaxSeq = false;
+uint16_t lastControlSeq = 0;
+uint32_t lastControlPacketMicros = 0;
+uint8_t lastControlByte = 0;
+bool receivedControlPacket = false;
 xrp::Watchdog _dsWatchdog{"status"};
 
-bool _processTaggedData(char* buffer, int start, int end) {
-  // The data here is the 1 byte tag and n byte payload
-  // range is [start, end) in buffer
+bool hasField(uint16_t mask, uint16_t field) { return (mask & field) != 0; }
 
-  bool success = true;
+int16_t clampMotorPwm(int16_t pwm) {
+  if (pwm > MOTOR_MAX_PWM) {
+    return MOTOR_MAX_PWM;
+  }
+  if (pwm < -MOTOR_MAX_PWM) {
+    return -MOTOR_MAX_PWM;
+  }
+  return pwm;
+}
 
-  uint8_t tag = buffer[start];
+uint8_t clampServoDegrees(uint8_t degrees) {
+  if (degrees > SERVO_MAX_DEGREES) {
+    return SERVO_MAX_DEGREES;
+  }
+  return degrees;
+}
 
-  switch (tag) {
-    case XRP_TAG_MOTOR: {
-      // Verify size
-      if (end - start < 6) {
-        return false;
-      }
+uint16_t voltageToAnalogValue(float voltage) {
+  if (!(voltage > 0.0f)) {  // Includes NaN; do not convert it to an integer.
+    return 0;
+  }
+  if (voltage >= ANALOG_MAX_VOLTAGE) {
+    return ANALOG_MAX_VALUE;
+  }
+  return static_cast<uint16_t>(
+      (voltage * ANALOG_MAX_VALUE / ANALOG_MAX_VOLTAGE) + 0.5f);
+}
 
-      int channel = buffer[start+1];
-      float value = networkToFloat(buffer, start+2);
+int expectedControlPacketSize(uint16_t mask) {
+  int size = PACKET_HEADER_SIZE;
 
-      xrp::setPwmValue(channel, value);
-    } break;
-    case XRP_TAG_SERVO: {
-      // Verify size
-      if (end - start < 6) {
-        return false;
-      }
-
-      int channel = buffer[start+1];
-      float value = networkToFloat(buffer, start+2);
-
-      // Servo position info comes as a 0 to 1 range
-      // we need to convert to -1 to 1
-      value = (2.0 * value) - 1.0;
-      xrp::setPwmValue(channel, value);
-    } break;
-    case XRP_TAG_DIO: {
-      if (end - start < 3) {
-        return false;
-      }
-
-      int channel = buffer[start+1];
-      bool value = buffer[start+2] == 1;
-
-      xrp::setDigitalOutput(channel, value);
-    } break;
-    default:
-      success = false;
+  for (int channel = 0; channel < 4; channel++) {
+    if (hasField(mask, CONTROL_MOTOR_0 << channel)) {
+      size += sizeof(int16_t);
+    }
   }
 
-  return success;
+  for (int channel = 4; channel < 8; channel++) {
+    if (hasField(mask, 1u << channel)) {
+      size += sizeof(uint8_t);
+    }
+  }
+
+  if (hasField(mask, CONTROL_DIO)) {
+    size += 2;
+  }
+
+  return size;
+}
+
+uint32_t normalizeEncoderPeriod(uint32_t period, uint32_t divisor) {
+  if (period == UINT32_MAX || divisor == 0) {
+    return UINT32_MAX;
+  }
+
+  uint32_t direction = period & 1u;
+  uint32_t ticks = period >> 1;
+  uint64_t periodUs =
+      (static_cast<uint64_t>(ticks) * ENCODER_PERIOD_DENOMINATOR + divisor / 2) /
+      divisor;
+  if (periodUs > (UINT32_MAX >> 1)) {
+    return UINT32_MAX;
+  }
+
+  return (static_cast<uint32_t>(periodUs) << 1) | direction;
+}
+
+uint16_t encodeControlRxAge10Us() {
+  if (!receivedControlPacket) {
+    return INVALID_CONTROL_RX_AGE_10_US;
+  }
+
+  uint32_t ageUs = static_cast<uint32_t>(micros() - lastControlPacketMicros);
+  uint32_t age10Us =
+      (ageUs + (CONTROL_RX_AGE_UNIT_US / 2)) / CONTROL_RX_AGE_UNIT_US;
+  if (age10Us >= INVALID_CONTROL_RX_AGE_10_US) {
+    return INVALID_CONTROL_RX_AGE_10_US;
+  }
+  return static_cast<uint16_t>(age10Us);
+}
+
+bool acceptSequence(uint16_t seq) {
+  if (!haveCurrMaxSeq) {
+    currMaxSeq = seq;
+    haveCurrMaxSeq = true;
+    return true;
+  }
+
+  uint16_t distance = seq - currMaxSeq;
+  if (distance == 0 || distance >= 0x8000) {
+    return false;
+  }
+
+  currMaxSeq = seq;
+  return true;
 }
 
 bool dsWatchdogActive() {
-  return _dsWatchdog.satisfied();
+  return receivedControlPacket && _dsWatchdog.satisfied();
 }
 
 void resetState() {
   currMaxSeq = 0;
+  haveCurrMaxSeq = false;
+  lastControlSeq = 0;
+  lastControlPacketMicros = 0;
+  lastControlByte = 0;
+  receivedControlPacket = false;
 }
 
+uint8_t lastControlByteReceived() { return lastControlByte; }
+
 bool processPacket(char* buffer, int size) {
-  if (size < 3) {
+  if (buffer == nullptr || size < PACKET_HEADER_SIZE) {
     return false;
   }
 
-  int startIdx = 0;
-  int endIdx = 0;
-
   // Overall packet format is
-  //       2           1           n 
-  // [    seq    ] [ ctrl ] [ tagged data ]
+  //       2           1           2              n
+  // [    seq    ] [ ctrl ] [ field mask ] [ field data ]
 
   uint16_t seq = networkToUInt16(buffer);
   uint8_t ctrl = buffer[2];
+  uint16_t fieldMask = networkToUInt16(buffer, 3);
+  if ((fieldMask & ~CONTROL_ALL_FIELDS) != 0) {
+    return false;
+  }
+
+  if (size != expectedControlPacketSize(fieldMask)) {
+    return false;
+  }
 
   // Check if the sequence number exceeds our latest seen seq number
-  if (seq > currMaxSeq) {
-    currMaxSeq = seq;
+  if (!acceptSequence(seq)) {
+    // Not processing this
+    return false;
   }
-  else {
-    if (SEQ_MAX - seq < SEQ_FUDGE_FACTOR) {
-      // Rollover
-      currMaxSeq = seq;
-    }
-    else {
-      // Not processing this
-      return false;
-    }
-  }
+  lastControlSeq = seq;
+  lastControlPacketMicros = micros();
+  lastControlByte = ctrl;
+  receivedControlPacket = true;
 
   // Control byte essentially encodes the enabled/disabled state
   xrp::robotSetEnabled(ctrl == 1);
@@ -109,23 +165,35 @@ bool processPacket(char* buffer, int size) {
   // Feed the watchdog
   _dsWatchdog.feed();
 
-  // Advance the start pointer
-  startIdx = 3;
+  int ptr = PACKET_HEADER_SIZE;
+  for (int channel = 0; channel < 4; channel++) {
+    if (hasField(fieldMask, CONTROL_MOTOR_0 << channel)) {
+      int16_t pwm = clampMotorPwm(networkToInt16(buffer, ptr));
+      ptr += sizeof(int16_t);
+      double value = static_cast<double>(pwm) / MOTOR_MAX_PWM;
+      xrp::setPwmValue(channel, value);
+    }
+  }
 
-  // We might have multiple tags in the same packet, so we basically need to take chunks of this
-  // [ size ] [ tag ] [      data       ]
-  // size does NOT include the size byte itself
+  for (int channel = 4; channel < 8; channel++) {
+    if (hasField(fieldMask, 1u << channel)) {
+      uint8_t degrees = clampServoDegrees(buffer[ptr++]);
 
-  while (startIdx < size) {
-    // Read the size
-    int msgSize = buffer[startIdx];
-    endIdx = startIdx + msgSize + 1;
+      // Servo position info comes as degrees; convert to the -1 to 1 range.
+      double value = (static_cast<double>(degrees) / 90.0) - 1.0;
+      xrp::setPwmValue(channel, value);
+    }
+  }
 
-    // We pass in 1 past startIdx so that we only give the tag + payload
-    bool result = _processTaggedData(buffer, startIdx+1, endIdx);
-
-    // Advance the start pointer
-    startIdx = endIdx;
+  if (hasField(fieldMask, CONTROL_DIO)) {
+    uint8_t presentMask = buffer[ptr++];
+    uint8_t valueMask = buffer[ptr++];
+    for (int channel = 0; channel < 8; channel++) {
+      uint8_t bit = 1u << channel;
+      if ((presentMask & bit) != 0) {
+        xrp::setDigitalOutput(channel, (valueMask & bit) != 0);
+      }
+    }
   }
 
   return true;
@@ -135,38 +203,27 @@ bool processPacket(char* buffer, int size) {
 // Message Encoders
 // ===================
 
-int writeEncoderData(int deviceId, int count, uint period, uint divisor, char* buffer, int offset) {
-  // Encoder message is 14 bytes
-  // tag(1) id(1) int(4) uint(4) uint(4)
+int writeEncoderData(int count, uint period, uint divisor, char* buffer,
+                     int offset) {
+  // Encoder data is count(4) + normalizedPeriod(4).
   int i = offset;
-  buffer[i++] = 2 + sizeof(int) + sizeof(uint) + sizeof(uint);
-  buffer[i++] = XRP_TAG_ENCODER;
-  buffer[i++] = deviceId & 0xFF;
   int32ToNetwork(count, buffer, i);
   i += sizeof(int);
-  int32ToNetwork(period, buffer, i);
+  uint32ToNetwork(normalizeEncoderPeriod(period, divisor), buffer, i);
   i += sizeof(uint);
-  int32ToNetwork(divisor, buffer, i);
-  i += sizeof(uint);
-  return i-offset; // +1 for the size byte
+  return i - offset;
 }
 
-int writeDIOData(int deviceId, bool value, char* buffer, int offset) {
-  // DIO Message is 3 bytes
-  // tag(1) id(1) value(1)
-  buffer[offset] = 3;
-  buffer[offset+1] = XRP_TAG_DIO;
-  buffer[offset+2] = deviceId & 0xFF;
-  buffer[offset+3] = value ? 1 : 0;
-  return 4; // +1 for the size byte
+int writeDIOData(uint8_t presentMask, uint8_t valueMask, char* buffer,
+                 int offset) {
+  buffer[offset] = presentMask;
+  buffer[offset + 1] = valueMask;
+  return 2;
 }
 
 int writeGyroData(float rates[3], float angles[3], char* buffer, int offset) {
-  // Gyro message is 25 bytes
-  // tag(1) rateX(4) rateY(4) rateZ(4) angleX(4) angleY(4) angleZ(4)
-  buffer[offset] = 25;
-  buffer[offset+1] = XRP_TAG_GYRO;
-  int ratePtr = offset + 2;
+  // Gyro data is rateX(4) rateY(4) rateZ(4) angleX(4) angleY(4) angleZ(4).
+  int ratePtr = offset;
   int anglePtr = ratePtr + 12;
   for (int i = 0; i < 3; i++) {
     floatToNetwork(rates[i], buffer, ratePtr);
@@ -175,33 +232,33 @@ int writeGyroData(float rates[3], float angles[3], char* buffer, int offset) {
     ratePtr += 4;
     anglePtr += 4;
   }
-  return 26; // +1 for the size byte
+  return 24;
 }
 
 int writeAccelData(float accels[3], char* buffer, int offset) {
-  // Accel message is 13 bytes
-  // tag(1) accX(4) accY(4) accZ(4)
-  buffer[offset] = 13;
-  buffer[offset+1] = XRP_TAG_ACCEL;
-  int ptr = offset + 2;
-  
+  // Accel data is accX(4) accY(4) accZ(4).
+  int ptr = offset;
+
   for (int i = 0; i < 3; i++) {
     floatToNetwork(accels[i], buffer, ptr);
     ptr += 4;
   }
 
-  return 14; // +1 for the size byte
+  return 12;
 }
 
-int writeAnalogData(int deviceId, float voltage, char* buffer, int offset) {
-  // Analog message is 6 bytes
-  // tag(1) id(1) value(4)
-  buffer[offset] = 6;
-  buffer[offset+1] = XRP_TAG_ANALOG;
-  buffer[offset+2] = deviceId;
-  floatToNetwork(voltage, buffer, offset+3);
+int writeAnalogData(float voltage, char* buffer, int offset) {
+  uint16ToNetwork(voltageToAnalogValue(voltage), buffer, offset);
 
-  return 7; // +1 for size byte
+  return sizeof(uint16_t);
+}
+
+int writeTimingData(char* buffer, int offset) {
+  // Timing data is lastControlSeq(2) + controlRxAge10Us(2).
+  uint16ToNetwork(lastControlSeq, buffer, offset);
+  uint16ToNetwork(encodeControlRxAge10Us(), buffer, offset + 2);
+
+  return 4;
 }
 
 } // namespace wpilib_protocol

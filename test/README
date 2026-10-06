@@ -2,20 +2,13 @@ Run host regressions from the repository root:
 
     python3 test/run_native.py
 
-Requires g++ (or CXX). Tests exercise the real logger and USB adapter with fake
-clock, USB FIFO, and mutex implementations. AddressSanitizer and
-UndefinedBehaviorSanitizer errors fail the run. CI runs these tests after
-building both firmware targets.
+Requires g++ (or CXX). Tests use fake hardware. AddressSanitizer and UndefinedBehaviorSanitizer errors
+fail the run. CI runs these tests after building both firmware targets.
 
-Coverage includes bounded diagnostic logging with a disconnected or stalled
-USB host, a busy USB mutex, partial writes, ring wraparound, full queues,
-reentrant callers, message truncation, and rate limiting across clock rollover.
-
-Serial latency retest:
-1. Capture USB Serial during normal control traffic and verify the periodic
-   summaries and connection events arrive without per-packet logging.
-2. Leave the serial port open while pausing host reads long enough for USB
-   buffers to fill. Confirm motor commands remain responsive and the watchdog
-   disables outputs when control traffic stops.
-3. Resume reading and check log_drop/log_supp counters. Repeat with USB
-   unplugged.
+Coverage includes:
+- bounded diagnostic logging with a disconnected or stalled USB host, a busy
+  USB mutex, partial writes, ring wraparound, full queues, reentrant callers,
+  message truncation, and per-category rate limiting across clock rollover;
+- packet lengths, all fixed-field masks, duplicate/stale sequences, rollover,
+  arbitrary initial sequences, watchdog resets, and control timing echoes;
+- degree-to-servo round trips and analog/encoder boundary values;

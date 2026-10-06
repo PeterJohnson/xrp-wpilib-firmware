@@ -111,16 +111,27 @@ void updateRemoteInfo() {
   }
 }
 
+void sendStatusPacket(char* buffer, int size) {
+  if (udpRemoteAddr.isSet()) {
+    udp.beginPacket(udpRemoteAddr.toString().c_str(), udpRemotePort);
+    udp.write(buffer, size);
+    udp.endPacket();
+    seq++;
+  }
+}
+
 void sendData() {
   int size = 0;
   char buffer[512];
   int ptr = 0;
+  uint16_t fieldMask = 0;
 
   uint16ToNetwork(seq, buffer);
-  buffer[2] = 0; // Unset the control byte
-  ptr = 3;
+  buffer[2] = wpilib_protocol::lastControlByteReceived();
+  ptr = wpilib_protocol::PACKET_HEADER_SIZE;
 
   // Encoders
+  static constexpr uint divisor = xrp::Encoder::getDivisor();
   for (int i = 0; i < 4; i++) {
     int encoderValue = xrp::readEncoderRaw(i);
     uint encoderPeriod = xrp::readEncoderPeriod(i);
@@ -128,62 +139,68 @@ void sendData() {
     // We want to flip the encoder 0 value (left motor encoder) so that this returns
     // positive values when moving forward.
     if (i == 0) {
-      encoderValue = -encoderValue;
-      encoderPeriod ^= 1; //Last bit is direction bit; Flip it.
+      // Use unsigned arithmetic at the signed counter's wrap point.
+      encoderValue =
+          static_cast<int32_t>(0u - static_cast<uint32_t>(encoderValue));
+      if (encoderPeriod != UINT32_MAX) {
+        encoderPeriod ^= 1;  // Preserve the invalid-period sentinel.
+      }
     }
 
-    static constexpr uint divisor = xrp::Encoder::getDivisor();
-
-    ptr += wpilib_protocol::writeEncoderData(i, encoderValue, encoderPeriod, divisor, buffer, ptr);
-  } // 4x 15 bytes
+    fieldMask |= wpilib_protocol::STATUS_ENCODER_0 << i;
+    ptr += wpilib_protocol::writeEncoderData(encoderValue, encoderPeriod, divisor,
+                                       buffer, ptr);
+  }
 
   // DIO (currently just the button)
-  ptr += wpilib_protocol::writeDIOData(0, xrp::isUserButtonPressed(), buffer, ptr);
-  // 1x 4 bytes
+  fieldMask |= wpilib_protocol::STATUS_DIO;
+  ptr += wpilib_protocol::writeDIOData(0x01, xrp::isUserButtonPressed() ? 0x01 : 0x00,
+                                 buffer, ptr);
 
   // Gyro and accel data
   float gyroRates[3] = {
-    xrp::imuGetGyroRateX(),
-    xrp::imuGetGyroRateY(),
-    xrp::imuGetGyroRateZ()
+      xrp::imuGetGyroRateX(),
+      xrp::imuGetGyroRateY(),
+      xrp::imuGetGyroRateZ(),
   };
 
   float gyroAngles[3] = {
-    xrp::imuGetRoll(),
-    xrp::imuGetPitch(),
-    xrp::imuGetYaw()
+      xrp::imuGetRoll(),
+      xrp::imuGetPitch(),
+      xrp::imuGetYaw(),
   };
 
   float accels[3] = {
-    xrp::imuGetAccelX(),
-    xrp::imuGetAccelY(),
-    xrp::imuGetAccelZ()
+      xrp::imuGetAccelX(),
+      xrp::imuGetAccelY(),
+      xrp::imuGetAccelZ(),
   };
 
+  fieldMask |= wpilib_protocol::STATUS_GYRO;
   ptr += wpilib_protocol::writeGyroData(gyroRates, gyroAngles, buffer, ptr);
-  // 1x 26 bytes
+  fieldMask |= wpilib_protocol::STATUS_ACCEL;
   ptr += wpilib_protocol::writeAccelData(accels, buffer, ptr);
-  // 1x 14 bytes
 
   if (xrp::reflectanceInitialized()) {
-    ptr += wpilib_protocol::writeAnalogData(0, xrp::getReflectanceLeft5V(), buffer, ptr);
-    ptr += wpilib_protocol::writeAnalogData(1, xrp::getReflectanceRight5V(), buffer, ptr);
+    fieldMask |= wpilib_protocol::STATUS_ANALOG_0;
+    ptr += wpilib_protocol::writeAnalogData(xrp::getReflectanceLeft5V(), buffer, ptr);
+    fieldMask |= wpilib_protocol::STATUS_ANALOG_1;
+    ptr += wpilib_protocol::writeAnalogData(xrp::getReflectanceRight5V(), buffer, ptr);
   }
 
   if (xrp::rangefinderInitialized()) {
-    ptr += wpilib_protocol::writeAnalogData(2, xrp::getRangefinderDistance5V(), buffer, ptr);
+    fieldMask |= wpilib_protocol::STATUS_ANALOG_2;
+    ptr += wpilib_protocol::writeAnalogData(xrp::getRangefinderDistance5V(), buffer, ptr);
   }
+
+  fieldMask |= wpilib_protocol::STATUS_TIMING;
+  ptr += wpilib_protocol::writeTimingData(buffer, ptr);
+  uint16ToNetwork(fieldMask, buffer, 3);
 
   // ptr should now point to 1 past the last byte
   size = ptr;
 
-  // Send
-  if (udpRemoteAddr.isSet()) {
-    udp.beginPacket(udpRemoteAddr.toString().c_str(), udpRemotePort);
-    udp.write(buffer, size);
-    udp.endPacket();
-    seq++;
-  }
+  sendStatusPacket(buffer, size);
 }
 
 // ==================================================

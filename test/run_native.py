@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run nonblocking serial logging regressions with sanitizers."""
+"""Run host regression tests with sanitizers."""
 import os
 from pathlib import Path
 import shlex
@@ -14,11 +14,20 @@ flags = [
     "-fno-sanitize-recover=all", "-fno-omit-frame-pointer",
     "-I" + str(root / "test/native/stubs"), "-I" + str(root / "include"),
 ]
-suites = {"debug_log": []}
+suites = {
+    "debug_log": [],
+    "protocol": [
+        "src/wpilib_protocol.cpp",
+        "src/byteutils.cpp",
+        "src/watchdog.cpp",
+        "src/XRPServo.cpp"
+    ]
+}
 with tempfile.TemporaryDirectory(prefix="xrp-native-tests-") as build_dir:
     for suite, sources in suites.items():
+        extra_flags = []
         executable = str(Path(build_dir) / suite)
-        command = compiler + flags + [
+        command = compiler + flags + extra_flags + [
             str(root / ("test/native/" + suite + "_test.cpp")),
             *(str(root / source) for source in sources),
             str(root / "src/debug_log.cpp"), str(root / "src/debug_log_usb.cpp"),
