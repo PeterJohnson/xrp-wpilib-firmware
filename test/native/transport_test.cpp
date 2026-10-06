@@ -630,24 +630,29 @@ int main() {
   // Test the status encoder path in main.cpp, including signed wrap and the
   // invalid period sentinel before left-encoder direction reversal.
   xrp::testEncoderCount = INT32_MIN;
+  testAnalogValue = 2048;
   sendData();
   completeL2cap();
   auto* status = reinterpret_cast<char*>(sentL2cap.back().data());
   assert(networkToInt32(status, 5) == INT32_MIN);
   assert(networkToUInt32(status, 9) == UINT32_MAX);
-  assert(sentL2cap.back().size() == 79);
+  assert((networkToUInt16(status, 3) & wpilib_protocol::STATUS_INPUT_VOLTAGE) != 0);
+  // No external analog sensors: VIN follows encoders, DIO, gyro and accel.
+  assert(networkToUInt16(status, 5 + 32 + 2 + 24 + 12) == 6652);
+  assert(sentL2cap.back().size() == 81);
   assert(LittleFS.writeOpens == writes);
 
-  // All sensors fit in one packet, with timing after the analog values.
+  // All sensors fit in one packet, with voltage immediately before timing.
   xrp::testReflectanceInitialized = true;
   xrp::testRangefinderInitialized = true;
   sendData();
   completeL2cap();
   status = reinterpret_cast<char*>(sentL2cap.back().data());
-  assert(sentL2cap.back().size() == 85);
-  assert(networkToUInt16(status, 3) == 0x0bff);
-  assert(networkToUInt16(status, 81) == 0);
-  assert(networkToUInt16(status, 83) == wpilib_protocol::INVALID_CONTROL_RX_AGE_10_US);
+  assert(sentL2cap.back().size() == 87);
+  assert(networkToUInt16(status, 3) == 0x0fff);
+  assert(networkToUInt16(status, 81) == 6652);
+  assert(networkToUInt16(status, 83) == 0);
+  assert(networkToUInt16(status, 85) == wpilib_protocol::INVALID_CONTROL_RX_AGE_10_US);
 
   // Identify works while disabled and its ACK does not interrupt telemetry.
   auto normalStatusSize = sentL2cap.back().size();
@@ -660,7 +665,7 @@ int main() {
   sendData();
   completeL2cap();
   assert(sentL2cap.back().size() == normalStatusSize + 5);
-  assert(sentL2cap.back().size() == 90);
+  assert(sentL2cap.back().size() == 92);
   status = reinterpret_cast<char*>(sentL2cap.back().data());
   auto statusMask = networkToUInt16(status, 3);
   assert((statusMask & wpilib_protocol::STATUS_COMMAND_ACK) != 0);

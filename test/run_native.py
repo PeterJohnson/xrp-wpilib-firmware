@@ -26,23 +26,13 @@ flags = [
 suites = {
     "debug_log": [],
     "identify_led": [],
-    "protocol": [
-        "src/wpilib_protocol.cpp",
-        "src/byteutils.cpp",
-        "src/watchdog.cpp",
-        "src/XRPServo.cpp"
-    ],
-    "config": [
-        "src/config.cpp"
-    ],
-    "transport": [
-        "src/bluetooth_transport.cpp",
-        "src/main.cpp",
-        "src/config.cpp",
-        "src/wpilib_protocol.cpp",
-        "src/byteutils.cpp",
-        "src/watchdog.cpp"
-    ]
+    "input_voltage": ["src/input_voltage.cpp"],
+    "protocol": ["src/wpilib_protocol.cpp", "src/byteutils.cpp", "src/watchdog.cpp",
+                 "src/XRPServo.cpp"],
+    "config": ["src/config.cpp"],
+    "transport": ["src/bluetooth_transport.cpp", "src/main.cpp", "src/config.cpp",
+                  "src/wpilib_protocol.cpp", "src/byteutils.cpp", "src/watchdog.cpp",
+                  "src/input_voltage.cpp"],
 }
 with tempfile.TemporaryDirectory(prefix="xrp-native-tests-") as build_dir:
     for suite, sources in suites.items():

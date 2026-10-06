@@ -2,6 +2,7 @@
 
 #include "robot.h"
 #include "identify_led.h"
+#include "input_voltage.h"
 #include "wpilib_protocol.h"
 #include "encoder.h"
 #include "XRPServo.h"
@@ -205,6 +206,7 @@ void robotInit() {
   debug_log::println("[XRP] Initializing XRP Onboards");
   pinMode(XRP_BUILTIN_LED, OUTPUT);
   pinMode(BOARD_USER_BUTTON, INPUT_PULLUP);
+  inputVoltageInit();
 
   // Set up the encoder state machines
   debug_log::println("[XRP] Initializing Encoders");

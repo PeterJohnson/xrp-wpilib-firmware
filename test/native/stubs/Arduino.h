@@ -4,6 +4,15 @@
 #include <cstdio>
 using uint = unsigned;
 using boolean = bool;
+constexpr uint8_t BOARD_VIN_MEASURE = 46;
+inline int testAnalogResolution = 0;
+inline int testAnalogPin = -1;
+inline int testAnalogValue = 0;
+inline void analogReadResolution(int bits) { testAnalogResolution = bits; }
+inline int analogRead(uint8_t pin) {
+  testAnalogPin = pin;
+  return testAnalogValue;
+}
 inline uint32_t testMicros = 1000000;
 inline uint32_t micros() { return testMicros; }
 inline uint32_t testMillisOffset = 0;

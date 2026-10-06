@@ -317,6 +317,19 @@ int writeAnalogData(float voltage, char* buffer, int offset) {
   return sizeof(uint16_t);
 }
 
+int writeInputVoltageData(float voltage, char* buffer, int offset) {
+  uint16_t millivolts = 0;
+  if (voltage >= static_cast<float>(UINT16_MAX) /
+                     INPUT_VOLTAGE_MILLIVOLTS_PER_VOLT) {
+    millivolts = UINT16_MAX;
+  } else if (voltage > 0.0f) {  // Negative and NaN readings encode as zero.
+    millivolts = static_cast<uint16_t>(
+        voltage * INPUT_VOLTAGE_MILLIVOLTS_PER_VOLT + 0.5f);
+  }
+  uint16ToNetwork(millivolts, buffer, offset);
+  return 2;
+}
+
 int writeTimingData(char* buffer, int offset) {
   // Timing data is lastControlSeq(2) + controlRxAge10Us(2).
   uint16ToNetwork(lastControlSeq, buffer, offset);

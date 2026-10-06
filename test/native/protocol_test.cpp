@@ -160,6 +160,20 @@ int main() {
   assert(networkToUInt16(encoded) == 32768);
   writeAnalogData(6.0f, encoded);
   assert(networkToUInt16(encoded) == 65535);
+  for (float voltage : {0.0f, -1.0f, -std::numeric_limits<float>::infinity(),
+                        std::numeric_limits<float>::quiet_NaN()}) {
+    assert(writeInputVoltageData(voltage, encoded) == 2);
+    assert(networkToUInt16(encoded) == 0);
+  }
+  std::fill(encoded, encoded + 8, 0x55);
+  assert(writeInputVoltageData(7.2506f, encoded, 2) == 2);
+  assert(static_cast<uint8_t>(encoded[2]) == 0x1c);
+  assert(static_cast<uint8_t>(encoded[3]) == 0x53);
+  assert(encoded[1] == 0x55 && encoded[4] == 0x55);
+  for (float voltage : {65.535f, 100.0f, std::numeric_limits<float>::infinity()}) {
+    writeInputVoltageData(voltage, encoded);
+    assert(networkToUInt16(encoded) == UINT16_MAX);
+  }
   floatToNetwork(-1.25f, encoded);
   assert(networkToFloat(encoded) == -1.25f);
 

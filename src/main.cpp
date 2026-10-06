@@ -13,6 +13,7 @@
 #include "config.h"
 #include "encoder.h"
 #include "imu.h"
+#include "input_voltage.h"
 #include "robot.h"
 #include "wpilib_protocol.h"
 
@@ -245,6 +246,9 @@ void sendData() {
     fieldMask |= wpilib_protocol::STATUS_ANALOG_2;
     ptr += wpilib_protocol::writeAnalogData(xrp::getRangefinderDistance5V(), buffer, ptr);
   }
+
+  fieldMask |= wpilib_protocol::STATUS_INPUT_VOLTAGE;
+  ptr += wpilib_protocol::writeInputVoltageData(xrp::getInputVoltage(), buffer, ptr);
 
   fieldMask |= wpilib_protocol::STATUS_TIMING;
   ptr += wpilib_protocol::writeTimingData(buffer, ptr);

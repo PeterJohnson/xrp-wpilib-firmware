@@ -132,6 +132,7 @@ Status packets sent by the XRP use these field bits:
 | 5 | Gyro | `rateX:f32`, `rateY:f32`, `rateZ:f32`, `angleX:f32`, `angleY:f32`, `angleZ:f32` |
 | 6 | Accel | `accelX:f32`, `accelY:f32`, `accelZ:f32` |
 | 7-9 | Analog 0-2 | `value:u16` |
+| 10 | Input voltage | `millivolts:u16` |
 | 11 | Timing | `lastControlSeq:u16`, `controlRxAge10Us:u16` |
 | 12 | Command ACK | `controlSeq:u16`, `controlFieldMask:u16`, `result:u8` |
 
@@ -171,6 +172,21 @@ As of 10/13/2023, you MUST use the [2024 Beta 1 version](https://github.com/wpil
 | 9          | Motor 3 Encoder B |
 | 10         | Motor 4 Encoder A |
 | 11         | Motor 4 Encoder B |
+
+### Input Voltage
+
+The firmware reads `BOARD_VIN_MEASURE` with the 12-bit ADC and sends board VIN
+in millivolts in every sensor status packet. Both the
+[beta](https://docs.sparkfun.com/SparkFun_XRP_Controller/assets/hardware_files/XRP_Controller_Beta.pdf)
+and [production](https://docs.sparkfun.com/SparkFun_XRP_Controller/assets/hardware_files/SparkFun-XRP-Controller-Schematic.pdf)
+boards use a 100 kΩ / 33 kΩ divider and a nominal 3.3 V ADC reference:
+`VIN = ADC / 4095 * 3.3 * (100 + 33) / 33`.
+
+The client displays this reading as **Input voltage** in **XRP Status** and maps
+it to HAL battery voltage (`RobotController.getBatteryVoltage()` in Java or
+`frc::RobotController::GetBatteryVoltage()` in C++). VIN is the supply after the
+board power switch; it can come from USB or the battery. The reading requires
+the board's VIN measurement jumper to be connected.
 
 ### Analog I/O Map
 | Analog Port # | Function          |
