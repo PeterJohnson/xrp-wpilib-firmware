@@ -1,5 +1,5 @@
 #include "byteutils.h"
-#include "wpilibudp.h"
+#include "wpilib_protocol.h"
 #include "robot.h"
 #include "watchdog.h"
 #include "imu.h"
@@ -9,7 +9,7 @@
 #define SEQ_FUDGE_FACTOR 5
 #define SEQ_MAX 65535
 
-namespace wpilibudp {
+namespace wpilib_protocol {
 
 uint16_t currMaxSeq = 0;
 xrp::Watchdog _dsWatchdog{"status"};
@@ -204,4 +204,4 @@ int writeAnalogData(int deviceId, float voltage, char* buffer, int offset) {
   return 7; // +1 for size byte
 }
 
-} // namespace wpilibudp
+} // namespace wpilib_protocol

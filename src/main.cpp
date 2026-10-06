@@ -15,7 +15,7 @@
 #include "config.h"
 #include "imu.h"
 #include "robot.h"
-#include "wpilibudp.h" 
+#include "wpilib_protocol.h"
 #include "encoder.h"
 
 // Resource strings
@@ -134,11 +134,11 @@ void sendData() {
 
     static constexpr uint divisor = xrp::Encoder::getDivisor();
 
-    ptr += wpilibudp::writeEncoderData(i, encoderValue, encoderPeriod, divisor, buffer, ptr);
+    ptr += wpilib_protocol::writeEncoderData(i, encoderValue, encoderPeriod, divisor, buffer, ptr);
   } // 4x 15 bytes
 
   // DIO (currently just the button)
-  ptr += wpilibudp::writeDIOData(0, xrp::isUserButtonPressed(), buffer, ptr);
+  ptr += wpilib_protocol::writeDIOData(0, xrp::isUserButtonPressed(), buffer, ptr);
   // 1x 4 bytes
 
   // Gyro and accel data
@@ -160,18 +160,18 @@ void sendData() {
     xrp::imuGetAccelZ()
   };
 
-  ptr += wpilibudp::writeGyroData(gyroRates, gyroAngles, buffer, ptr);
+  ptr += wpilib_protocol::writeGyroData(gyroRates, gyroAngles, buffer, ptr);
   // 1x 26 bytes
-  ptr += wpilibudp::writeAccelData(accels, buffer, ptr);
+  ptr += wpilib_protocol::writeAccelData(accels, buffer, ptr);
   // 1x 14 bytes
 
   if (xrp::reflectanceInitialized()) {
-    ptr += wpilibudp::writeAnalogData(0, xrp::getReflectanceLeft5V(), buffer, ptr);
-    ptr += wpilibudp::writeAnalogData(1, xrp::getReflectanceRight5V(), buffer, ptr);
+    ptr += wpilib_protocol::writeAnalogData(0, xrp::getReflectanceLeft5V(), buffer, ptr);
+    ptr += wpilib_protocol::writeAnalogData(1, xrp::getReflectanceRight5V(), buffer, ptr);
   }
 
   if (xrp::rangefinderInitialized()) {
-    ptr += wpilibudp::writeAnalogData(2, xrp::getRangefinderDistance5V(), buffer, ptr);
+    ptr += wpilib_protocol::writeAnalogData(2, xrp::getRangefinderDistance5V(), buffer, ptr);
   }
 
   // ptr should now point to 1 past the last byte
@@ -371,7 +371,7 @@ void loop() {
 
     // Read the packet
     int n = udp.read(udpPacketBuf, UDP_TX_PACKET_MAX_SIZE);
-    wpilibudp::processPacket(udpPacketBuf, n);
+    wpilib_protocol::processPacket(udpPacketBuf, n);
   }
 
   xrp::imuPeriodic();
@@ -379,8 +379,8 @@ void loop() {
 
   // Disable the robot when the UDP watchdog timesout
   // Also reset the max sequence number so we can handle reconnects
-  if (!wpilibudp::dsWatchdogActive()) {
-    wpilibudp::resetState();
+  if (!wpilib_protocol::dsWatchdogActive()) {
+    wpilib_protocol::resetState();
     xrp::robotSetEnabled(false);
     xrp::imuSetEnabled(false);
   }

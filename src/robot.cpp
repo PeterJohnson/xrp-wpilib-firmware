@@ -1,7 +1,7 @@
 #include "debug_log.h"
 
 #include "robot.h"
-#include "wpilibudp.h"
+#include "wpilib_protocol.h"
 #include "encoder.h"
 #include "XRPServo.h"
 
@@ -146,7 +146,7 @@ void _setMotorPwmValueInternal(int en, int ph, double value) {
 void _setPwmValueInternal(int channel, double value, bool override) {
   if (!_robotEnabled && !override) return;
 
-  if (!wpilibudp::dsWatchdogActive() && !override) {
+  if (!wpilib_protocol::dsWatchdogActive() && !override) {
     return;
   }
 
@@ -226,7 +226,7 @@ uint8_t robotPeriodic() {
 
   // Kill PWM if the watchdog is dead
   // We want this to run as quickly as possible
-  if (!wpilibudp::dsWatchdogActive()) {
+  if (!wpilib_protocol::dsWatchdogActive()) {
     _pwmShutoff();
   }
 
