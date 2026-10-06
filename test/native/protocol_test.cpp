@@ -24,9 +24,16 @@ std::vector<char> packet(uint16_t seq, uint16_t mask = 0,
 bool process(std::vector<char> value) {
   return processPacket(value.data(), value.size());
 }
+bool renameSucceeds = false;
+unsigned renameCalls = 0;
+uint8_t renameHandler(const char *, size_t) {
+  ++renameCalls;
+  return renameSucceeds ? COMMAND_ACK_SUCCESS : COMMAND_ACK_REJECTED;
+}
 int main() {
   testMicros = 0;
   resetState();
+  clearCommandAck();
   assert(!dsWatchdogActive());
   assert(process(packet(0)));
   assert(dsWatchdogActive() && xrp::testRobotEnabled);
@@ -48,6 +55,7 @@ int main() {
   // Malformed packets have no partial effects and do not consume sequence IDs.
   assert(!process(packet(2, CONTROL_MOTOR_0, {0})));
   assert(!process(packet(2, 1u << 13)));
+  assert(!process(packet(2, CONTROL_DEVICE_NAME | CONTROL_MOTOR_0)));
   assert(!processPacket(nullptr, 5));
   assert(process(packet(
       2, CONTROL_MOTOR_0 | CONTROL_MOTOR_1 | CONTROL_SERVO_4 | CONTROL_DIO,
@@ -57,10 +65,35 @@ int main() {
   assert(process(packet(3, 0, {}, 0)));
   assert(!xrp::testRobotEnabled);
 
+  // Rename failures queue a NACK and consume the understood command sequence.
+  setDeviceNameHandler(renameHandler);
+  assert(!process(packet(4, CONTROL_DEVICE_NAME, {1, 'A'})));
+  assert(commandAckPending());
+  char ack[5];
+  assert(writeCommandAckData(ack) == 5);
+  assert(networkToUInt16(ack) == 4);
+  assert(networkToUInt16(ack, 2) == CONTROL_DEVICE_NAME);
+  assert(static_cast<uint8_t>(ack[4]) == COMMAND_ACK_REJECTED);
+  assert(!process(packet(4)));
+  assert(process(packet(5)));
+  auto ackVersion = commandAckVersion();
+  renameSucceeds = true;
+  assert(process(packet(6, CONTROL_DEVICE_NAME, {1, 'A'})));
+  assert(commandAckVersion() != ackVersion);
+  assert(commandAckPending());
+  assert(writeCommandAckData(ack) == 5);
+  assert(networkToUInt16(ack) == 6);
+  assert(networkToUInt16(ack, 2) == CONTROL_DEVICE_NAME);
+  assert(static_cast<uint8_t>(ack[4]) == COMMAND_ACK_SUCCESS);
+  clearCommandAck();
+  assert(!commandAckPending());
+  assert(!process(packet(6, CONTROL_DEVICE_NAME, {1, 'A'})));
+  assert(renameCalls == 2);
   char timing[4];
   testMicros += 120;
   assert(writeTimingData(timing) == 4);
-  assert(networkToUInt16(timing) == 3 && networkToUInt16(timing, 2) == 12);
+  // Rename advances the command sequence, but not the control timestamp.
+  assert(networkToUInt16(timing) == 5 && networkToUInt16(timing, 2) == 12);
   testMicros += 500000;
   assert(!dsWatchdogActive());
   resetState();

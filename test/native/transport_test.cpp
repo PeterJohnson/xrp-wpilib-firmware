@@ -14,10 +14,14 @@
 
 void loop();
 void sendData();
+bool shouldSendCommandAck(unsigned long now);
 void updateStatusFile();
+uint8_t handleBluetoothDeviceNameRequest(const char*, size_t);
 extern char DEFAULT_BLUETOOTH_NAME_SUFFIX[20];
 extern char CHIP_ID[20];
 extern char BLUETOOTH_DEVICE_NAME[32];
+extern bool _restartRequested;
+extern unsigned long _restartAtMs;
 extern "C" const unsigned char* GetResource_VERSION(size_t* len) {
   *len = 4;
   return reinterpret_cast<const unsigned char*>("test");
@@ -150,6 +154,16 @@ void receive(std::initializer_list<uint8_t> bytes) {
 }
 void control(uint16_t seq, uint8_t ctrl = 1) {
   receive({static_cast<uint8_t>(seq >> 8), static_cast<uint8_t>(seq), ctrl, 0, 0});
+}
+void rename(uint16_t seq, const std::string& name) {
+  std::vector<uint8_t> value(wpilib_protocol::PACKET_HEADER_SIZE + 1 + name.size());
+  uint16ToNetwork(seq, reinterpret_cast<char*>(value.data()));
+  uint16ToNetwork(wpilib_protocol::CONTROL_DEVICE_NAME,
+                  reinterpret_cast<char*>(value.data()), 3);
+  value[5] = name.size();
+  std::copy(name.begin(), name.end(), value.begin() + 6);
+  BluetoothLock lock;
+  channelHandler(L2CAP_DATA_PACKET, cid, value.data(), value.size());
 }
 }  // namespace
 
@@ -607,5 +621,49 @@ int main() {
   assert(networkToUInt16(status, 81) == 0);
   assert(networkToUInt16(status, 83) == wpilib_protocol::INVALID_CONTROL_RX_AGE_10_US);
 
+  // Each new ACK gets the full repeat interval, including a new command near
+  // expiry of a previous NACK. Failed saves must leave outputs disabled.
+  std::strcpy(DEFAULT_BLUETOOTH_NAME_SUFFIX, "AAAA-BBBB");
+  wpilib_protocol::setDeviceNameHandler(handleBluetoothDeviceNameRequest);
+  control(1);
+  loop();
+  LittleFS.failOpen = true;
+  rename(2, "FailedSave");
+  loop();
+  assert(!xrp::testRobotEnabled && !_restartRequested);
+  assert(shouldSendCommandAck(millis()));
+  testMicros += 490000;
+  LittleFS.failOpen = false;
+  control(3);
+  loop();
+  assert(xrp::testRobotEnabled);
+  auto enableCalls = xrp::testEnableCalls;
+  testBeforeFileWrite = [] {
+    assert(!xrp::testRobotEnabled && !xrp::testImuEnabled);
+    assert(!testInterruptsEnabled);
+  };
+  // A suffix beginning with WPIXRP- must not lose a second prefix.
+  rename(4, "WPIXRP-WPIXRP-Bot");
+  control(5);  // A queued enable must not override rename's output shutdown.
+  rename(6, "Ignored");
+  loop();
+  testBeforeFileWrite = nullptr;
+  assert(_restartRequested && !xrp::testRobotEnabled);
+  assert(xrp::testEnableCalls == enableCalls && testInterruptsEnabled);
+  assert(loadConfiguration("AAAA-BBBB").bluetoothConfig.deviceNameSuffix ==
+         "WPIXRP-Bot");
+  assert(shouldSendCommandAck(millis()));
+  testMicros += 20000;
+  assert(shouldSendCommandAck(millis()));  // Past the original NACK deadline.
+  sendData();
+  completeL2cap();
+  status = reinterpret_cast<char*>(sentL2cap.back().data());
+  assert(networkToUInt16(status, 3) == wpilib_protocol::STATUS_COMMAND_ACK);
+  assert(networkToUInt16(status, 5) == 4);
+  assert(status[9] == wpilib_protocol::COMMAND_ACK_SUCCESS);
+  testMicros = _restartAtMs * 1000;
+  loop();
+  assert(rp2040.restarts == 1 && !xrp::testRobotEnabled);
+  assert(!shouldSendCommandAck(millis()));
   std::puts("transport and firmware loop tests passed");
 }

@@ -272,6 +272,10 @@ void robotSetEnabled(bool enabled) {
   }
 }
 
+bool robotEnabled() {
+  return _robotEnabled;
+}
+
 void configureEncoder(int deviceId, int chA, int chB) {
   if (chA == WPILIB_ENCODER_L_CH_A && chB == WPILIB_ENCODER_L_CH_B) {
     _encoderWPILibChannelToNativeMap[deviceId] = ENC_SM_IDX_MOTOR_L;

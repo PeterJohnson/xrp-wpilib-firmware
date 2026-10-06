@@ -36,4 +36,6 @@ XRPConfiguration generateDefaultConfig(
     const std::string& defaultBluetoothNameSuffix);
 XRPConfiguration loadConfiguration(
     const std::string& defaultBluetoothNameSuffix);
+bool saveBluetoothDeviceName(const std::string& deviceNameOrSuffix,
+                             const std::string& defaultBluetoothNameSuffix);
 bool isValidBluetoothDeviceNameSuffix(const std::string& deviceNameSuffix);

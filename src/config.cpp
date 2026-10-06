@@ -373,3 +373,16 @@ XRPConfiguration loadConfiguration(
 
   return config;
 }
+
+bool saveBluetoothDeviceName(const std::string& deviceNameOrSuffix,
+                             const std::string& defaultBluetoothNameSuffix) {
+  std::string deviceNameSuffix =
+      normalizeBluetoothDeviceNameSuffix(deviceNameOrSuffix);
+  if (!isValidBluetoothDeviceNameSuffix(deviceNameSuffix)) {
+    return false;
+  }
+
+  XRPConfiguration config = generateDefaultConfig(defaultBluetoothNameSuffix);
+  config.bluetoothConfig.deviceNameSuffix = deviceNameSuffix;
+  return writeConfigToDisk(config, defaultBluetoothNameSuffix);
+}

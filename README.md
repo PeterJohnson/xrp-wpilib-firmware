@@ -101,6 +101,7 @@ Control packets sent to the XRP use these field bits:
 | 0-3 | Motor 0-3 | `pwm:i16` |
 | 4-7 | Servo 4-7 | `degrees:u8` |
 | 8 | DIO 0-7 | `presentMask:u8`, `valueMask:u8` |
+| 15 | Device name | `length:u8`, followed by `length` printable ASCII bytes |
 
 Status packets sent by the XRP use these field bits:
 
@@ -112,12 +113,13 @@ Status packets sent by the XRP use these field bits:
 | 6 | Accel | `accelX:f32`, `accelY:f32`, `accelZ:f32` |
 | 7-9 | Analog 0-2 | `value:u16` |
 | 11 | Timing | `lastControlSeq:u16`, `controlRxAge10Us:u16` |
+| 12 | Command ACK | `controlSeq:u16`, `controlFieldMask:u16`, `result:u8` |
 
-Motor `pwm` values are clamped to `-255` to `255`, which maps directly to the XRP motor PWM magnitude plus direction. Servo `degrees` values are clamped to `0` to `180`, matching the integer degree value applied by the XRP servo library. DIO payload bits are channel-indexed; bit `n` in `presentMask` means DIO channel `n` is included, and bit `n` in `valueMask` is that channel's value. XRP status currently reports DIO 0, the user button. Analog values are scaled over `0` to `5 V`, where `0` is `0 V` and `65535` is `5 V`.
+Motor `pwm` values are clamped to `-255` to `255`, which maps directly to the XRP motor PWM magnitude plus direction. Servo `degrees` values are clamped to `0` to `180`, matching the integer degree value applied by the XRP servo library. DIO payload bits are channel-indexed; bit `n` in `presentMask` means DIO channel `n` is included, and bit `n` in `valueMask` is that channel's value. A device name control packet must use only bit 15; its payload may contain either the full `WPIXRP-` name or just the suffix. The firmware validates the name, writes it to `/config.ini`, and reboots so the new Bluetooth advertisement name is applied. The firmware sends command ACK status packets for 500 ms, with result `0` for success or `1` for rejection; rename ACKs temporarily replace sensor status packets. A successful rename disables outputs before saving and keeps them disabled until reboot. XRP status currently reports DIO 0, the user button. Analog values are scaled over `0` to `5 V`, where `0` is `0 V` and `65535` is `5 V`.
 
 Encoder period uses a fixed denominator of `1000000`; `periodNumerator >> 1` is the period in microseconds, and the low bit is the direction bit (`1` for forward, `0` for reverse). A `periodNumerator` of `0xffffffff` indicates no valid period.
 
-The XRP status `ctrl` byte is a copy of the most recent accepted control packet `ctrl` byte. The timing field's `lastControlSeq` echoes the most recent accepted motor/servo/DIO control packet sequence number, and `controlRxAge10Us * 10` is the number of microseconds between receiving that control packet and producing the status packet. A `controlRxAge10Us` value of `0xffff` indicates no control packet has been accepted yet or the age exceeded the representable range. Clients can use this echo with their local control-packet send timestamps to estimate application-level round-trip latency.
+The XRP status `ctrl` byte is a copy of the most recent accepted control packet `ctrl` byte. The timing field's `lastControlSeq` echoes the most recent accepted motor/servo/DIO control packet sequence number (excluding rename commands), and `controlRxAge10Us * 10` is the number of microseconds between receiving that control packet and producing the status packet. A `controlRxAge10Us` value of `0xffff` indicates no control packet has been accepted yet or the age exceeded the representable range. Clients can use this echo with their local control-packet send timestamps to estimate application-level round-trip latency.
 
 Control sequences use 16-bit modular ordering, accepting forward distances of 1-32767 and ignoring duplicates or stale packets. Disconnects and L2CAP channel closure reset control state, so the next session may start at any sequence number.
 

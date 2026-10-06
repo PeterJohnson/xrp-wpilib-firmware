@@ -13,6 +13,12 @@ uint16_t lastControlSeq = 0;
 uint32_t lastControlPacketMicros = 0;
 uint8_t lastControlByte = 0;
 bool receivedControlPacket = false;
+uint16_t commandAckControlSeq = 0;
+uint16_t commandAckControlFieldMask = 0;
+uint8_t commandAckResult = COMMAND_ACK_REJECTED;
+bool pendingCommandAck = false;
+uint32_t commandAckGeneration = 0;
+DeviceNameHandler deviceNameHandler = nullptr;
 xrp::Watchdog _dsWatchdog{"status"};
 
 bool hasField(uint16_t mask, uint16_t field) { return (mask & field) != 0; }
@@ -114,8 +120,46 @@ bool acceptSequence(uint16_t seq) {
   return true;
 }
 
+void queueCommandAck(uint16_t seq, uint16_t fieldMask, uint8_t result) {
+  commandAckControlSeq = seq;
+  commandAckControlFieldMask = fieldMask;
+  commandAckResult = result == COMMAND_ACK_SUCCESS ? COMMAND_ACK_SUCCESS
+                                                   : COMMAND_ACK_REJECTED;
+  pendingCommandAck = true;
+  ++commandAckGeneration;
+}
+
+bool processDeviceNamePacket(char* buffer, int size, uint16_t seq) {
+  if (size < PACKET_HEADER_SIZE + static_cast<int>(sizeof(uint8_t))) {
+    return false;
+  }
+
+  uint8_t deviceNameLength =
+      static_cast<uint8_t>(buffer[PACKET_HEADER_SIZE]);
+  if (deviceNameLength == 0 ||
+      deviceNameLength > CONTROL_DEVICE_NAME_MAX_LENGTH ||
+      size != PACKET_HEADER_SIZE + 1 + deviceNameLength) {
+    return false;
+  }
+
+  if (!acceptSequence(seq)) {
+    return false;
+  }
+
+  uint8_t result = deviceNameHandler == nullptr
+                       ? COMMAND_ACK_REJECTED
+                       : deviceNameHandler(&buffer[PACKET_HEADER_SIZE + 1],
+                                           deviceNameLength);
+  queueCommandAck(seq, CONTROL_DEVICE_NAME, result);
+  return commandAckResult == COMMAND_ACK_SUCCESS;
+}
+
 bool dsWatchdogActive() {
   return receivedControlPacket && _dsWatchdog.satisfied();
+}
+
+void setDeviceNameHandler(DeviceNameHandler handler) {
+  deviceNameHandler = handler;
 }
 
 void resetState() {
@@ -128,6 +172,14 @@ void resetState() {
 }
 
 uint8_t lastControlByteReceived() { return lastControlByte; }
+
+bool commandAckPending() { return pendingCommandAck; }
+
+uint16_t commandAckFieldMask() { return commandAckControlFieldMask; }
+
+uint32_t commandAckVersion() { return commandAckGeneration; }
+
+void clearCommandAck() { pendingCommandAck = false; }
 
 bool processPacket(char* buffer, int size) {
   if (buffer == nullptr || size < PACKET_HEADER_SIZE) {
@@ -145,7 +197,12 @@ bool processPacket(char* buffer, int size) {
     return false;
   }
 
-  if (size != expectedControlPacketSize(fieldMask)) {
+  if (fieldMask == CONTROL_DEVICE_NAME) {
+    return processDeviceNamePacket(buffer, size, seq);
+  }
+
+  if (hasField(fieldMask, CONTROL_DEVICE_NAME) ||
+      size != expectedControlPacketSize(fieldMask)) {
     return false;
   }
 
@@ -259,6 +316,15 @@ int writeTimingData(char* buffer, int offset) {
   uint16ToNetwork(encodeControlRxAge10Us(), buffer, offset + 2);
 
   return 4;
+}
+
+int writeCommandAckData(char* buffer, int offset) {
+  // Command ack data is controlSeq(2) + controlFieldMask(2) + result(1).
+  uint16ToNetwork(commandAckControlSeq, buffer, offset);
+  uint16ToNetwork(commandAckControlFieldMask, buffer, offset + 2);
+  buffer[offset + 4] = commandAckResult;
+
+  return 5;
 }
 
 } // namespace wpilib_protocol

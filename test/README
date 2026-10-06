@@ -17,9 +17,10 @@ Coverage includes:
 - motor-command processing and watchdog shutdown with a full diagnostic queue
   and stalled USB reader, and USB draining after control processing;
 - packet lengths, all fixed-field masks, duplicate/stale sequences, rollover,
-  arbitrary initial sequences, watchdog resets, and control timing echoes;
+  arbitrary initial sequences, watchdog resets, and rename ACK/timing echoes;
 - degree-to-servo round trips and analog/encoder boundary values;
-- INI parsing, integer overflow, and escaped names;
+- INI parsing, integer overflow, escaped names, and config preservation on
+  short writes, failed close/sync, failed rename, and failed open;
 - L2CAP retained SDU buffers, coalescing, inline/deferred callbacks, request
   errors, pending channel reservations, queue overflow, and foreign peers;
 - GATT fallback with a credit-starved L2CAP channel still open, switching back
@@ -27,6 +28,8 @@ Coverage includes:
 - the actual main loop during fast L2CAP reconnects with reused handles/CIDs,
   either LE/ATT event order, queued RX/TX, sequence zero before watchdog expiry,
   L2CAP-only closure, and disconnect without a new packet;
+- output shutdown before rename writes, queued enables during the reboot
+  delay, repeated ACK windows, and status encoding of encoder wrap/sentinels;
 - the actual bundled BTstack allocator with the project patch: 1,024 LE channel
   allocations, wraparound at 0x007f, occupied channels, and Classic/LE interleaving.
 
@@ -37,7 +40,9 @@ Hardware retest (native tests cannot reproduce controller/OS radio timing):
    controls and status resume, and queued commands do not survive disconnect.
 2. Run through sequence 65535 -> 0 (about 22 minutes at 50 packets/second).
 3. Repeat with a busy link and with a second client attempting to connect.
-4. Smoke-test GATT, including notification disable/re-enable and reconnect.
+4. Rename while enabled: outputs should stop, a success ACK should arrive,
+   and reconnect should work under the new name after reboot.
+5. Smoke-test GATT, including notification disable/re-enable and reconnect.
 
 The protocol uses modular sequence comparisons and automatically enables GATT
 notifications when control traffic arrives.

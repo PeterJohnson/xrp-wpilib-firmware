@@ -36,9 +36,15 @@ char transportPacketBuf[bluetooth_transport::MAX_PACKET_SIZE];
 
 // Serial diagnostics
 unsigned long _lastMessageStatusPrint = 0;
+constexpr unsigned long COMMAND_ACK_REPEAT_MS = 500;
 
 unsigned long _avgLoopTimeUs = 0;
 unsigned long _loopTimeMeasurementCount = 0;
+bool _restartRequested = false;
+unsigned long _restartAtMs = 0;
+unsigned long _commandAckUntilMs = 0;
+uint32_t _lastCommandAckVersion = 0;
+
 uint16_t seq = 0;
 
 // Called only during setup, before Bluetooth and the USB status drive start.
@@ -71,9 +77,69 @@ void updateStatusFile() {
   }
 }
 
+uint8_t handleBluetoothDeviceNameRequest(const char* deviceName,
+                                         size_t length) {
+  if (_restartRequested) {
+    return wpilib_protocol::COMMAND_ACK_REJECTED;
+  }
+  std::string requestedDeviceName(deviceName, length);
+  std::string deviceNameSuffix =
+      normalizeBluetoothDeviceNameSuffix(requestedDeviceName);
+  if (!isValidBluetoothDeviceNameSuffix(deviceNameSuffix)) {
+    debug_log::println("[CONFIG] Rejected Bluetooth rename request");
+    return wpilib_protocol::COMMAND_ACK_REJECTED;
+  }
+
+  // Disable outputs before flash stalls, and serialize LittleFS access with
+  // USB status-file reads in the interrupt handler. Normalize the name once.
+  xrp::robotSetEnabled(false);
+  xrp::imuSetEnabled(false);
+  noInterrupts();
+  bool saved = saveBluetoothDeviceName(requestedDeviceName,
+                                       DEFAULT_BLUETOOTH_NAME_SUFFIX);
+  interrupts();
+  if (!saved) {
+    debug_log::println("[CONFIG] Failed to save Bluetooth rename request");
+    return wpilib_protocol::COMMAND_ACK_REJECTED;
+  }
+
+  std::string bluetoothDeviceName =
+      buildBluetoothDeviceName(deviceNameSuffix);
+  strncpy(BLUETOOTH_DEVICE_NAME, bluetoothDeviceName.c_str(),
+          sizeof(BLUETOOTH_DEVICE_NAME) - 1);
+  BLUETOOTH_DEVICE_NAME[sizeof(BLUETOOTH_DEVICE_NAME) - 1] = '\0';
+  debug_log::log("[CONFIG] Bluetooth name changed to %s; rebooting\n",
+                BLUETOOTH_DEVICE_NAME);
+
+  _restartRequested = true;
+  _restartAtMs = millis() + 500;
+  return wpilib_protocol::COMMAND_ACK_SUCCESS;
+}
+
 // ==================================================
 // Bluetooth Transport Functions
 // ==================================================
+
+bool shouldSendCommandAck(unsigned long now) {
+  if (!wpilib_protocol::commandAckPending()) {
+    _commandAckUntilMs = 0;
+    return false;
+  }
+
+  uint32_t version = wpilib_protocol::commandAckVersion();
+  if (_commandAckUntilMs == 0 || version != _lastCommandAckVersion) {
+    _lastCommandAckVersion = version;
+    _commandAckUntilMs = now + COMMAND_ACK_REPEAT_MS;
+  }
+
+  if (static_cast<long>(now - _commandAckUntilMs) >= 0) {
+    wpilib_protocol::clearCommandAck();
+    _commandAckUntilMs = 0;
+    return false;
+  }
+
+  return true;
+}
 
 void sendStatusPacket(char* buffer, int size) {
   if (bluetooth_transport::sendPacket(buffer, size)) {
@@ -82,14 +148,25 @@ void sendStatusPacket(char* buffer, int size) {
 }
 
 void sendData() {
+  unsigned long statusBuildMs = millis();
   int size = 0;
   char buffer[512];
   int ptr = 0;
   uint16_t fieldMask = 0;
+  bool sendCommandAck = shouldSendCommandAck(statusBuildMs);
 
   uint16ToNetwork(seq, buffer);
   buffer[2] = wpilib_protocol::lastControlByteReceived();
   ptr = wpilib_protocol::PACKET_HEADER_SIZE;
+
+  if (sendCommandAck) {
+    fieldMask |= wpilib_protocol::STATUS_COMMAND_ACK;
+    ptr += wpilib_protocol::writeCommandAckData(buffer, ptr);
+    uint16ToNetwork(fieldMask, buffer, 3);
+    size = ptr;
+    sendStatusPacket(buffer, size);
+    return;
+  }
 
   // Encoders
   static constexpr uint divisor = xrp::Encoder::getDivisor();
@@ -223,6 +300,7 @@ void setup() {
   strncpy(BLUETOOTH_DEVICE_NAME, bluetoothDeviceName.c_str(),
           sizeof(BLUETOOTH_DEVICE_NAME) - 1);
   BLUETOOTH_DEVICE_NAME[sizeof(BLUETOOTH_DEVICE_NAME) - 1] = '\0';
+  wpilib_protocol::setDeviceNameHandler(handleBluetoothDeviceNameRequest);
 
   // MUST BE BEFORE imuCalibrate (has digitalWrites) and Bluetooth startup
   xrp::robotInit();
@@ -260,7 +338,7 @@ void loop() {
   // A disconnect/reconnect may occur entirely between loop iterations. Read
   // the session and packet atomically so the new peer can start at any sequence.
   static uint32_t previousSession = 0;
-  // Bound work so sustained control traffic cannot starve outputs.
+  // Bound work so sustained control traffic cannot starve outputs or reboot.
   constexpr unsigned MAX_CONTROL_PACKETS_PER_LOOP = 16;
   for (unsigned i = 0; i < MAX_CONTROL_PACKETS_PER_LOOP; ++i) {
     size_t packetSize = 0;
@@ -270,13 +348,22 @@ void loop() {
     if (session != previousSession) {
       previousSession = session;
       wpilib_protocol::resetState();
+      wpilib_protocol::clearCommandAck();
+      _commandAckUntilMs = 0;
       xrp::robotSetEnabled(false);
       xrp::imuSetEnabled(false);
     }
     if (!havePacket) {
       break;
     }
-    wpilib_protocol::processPacket(transportPacketBuf, static_cast<int>(packetSize));
+    if (!_restartRequested) {
+      wpilib_protocol::processPacket(transportPacketBuf, static_cast<int>(packetSize));
+    }
+  }
+
+  if (_restartRequested &&
+      static_cast<long>(millis() - _restartAtMs) >= 0) {
+    rp2040.restart();
   }
 
   xrp::imuPeriodic();
