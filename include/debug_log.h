@@ -10,6 +10,9 @@ constexpr size_t MAX_MESSAGE_SIZE = 768;
 constexpr size_t DRAIN_BUDGET = 64;
 
 enum class Error {
+  L2CAP_SEND,
+  GATT_SEND,
+  GATT_REQUEST,
   ENCODER_OVERRUN,
   COUNT
 };

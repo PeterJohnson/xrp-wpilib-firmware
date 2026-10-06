@@ -111,17 +111,18 @@ int main() {
   assert(counters().truncated == 1);
   testUsbOutput.clear();
 
-  // Rate limits handle repeated errors and millis() rollover.
+  // Rate limits are independent per category and handle millis() rollover.
   testMicros = 0;
   testMillisOffset = UINT32_MAX - 500;
-  logLimited(Error::ENCODER_OVERRUN, "first\n");
-  for (int i = 0; i < 100; ++i) logLimited(Error::ENCODER_OVERRUN, "repeat\n");
+  logLimited(Error::L2CAP_SEND, "first\n");
+  for (int i = 0; i < 100; ++i) logLimited(Error::L2CAP_SEND, "repeat\n");
+  logLimited(Error::GATT_SEND, "other\n");
   testMillisOffset = 200;
-  logLimited(Error::ENCODER_OVERRUN, "too soon\n");
+  logLimited(Error::L2CAP_SEND, "too soon\n");
   testMillisOffset = 500;
-  logLimited(Error::ENCODER_OVERRUN, "next\n");
+  logLimited(Error::L2CAP_SEND, "next\n");
   drainAll();
-  assert(testUsbOutput == "first\nnext\n");
+  assert(testUsbOutput == "first\nother\nnext\n");
   assert(counters().suppressed == 101);
   assert(testUsbFlushes == testUsbWrites);
   std::puts("nonblocking diagnostic log tests passed");

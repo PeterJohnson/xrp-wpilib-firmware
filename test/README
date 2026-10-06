@@ -5,7 +5,9 @@ Run host regressions from the repository root:
 Requires g++ (or CXX), gcc (or CC), and the Arduino-Pico framework installed
 by `pio run`.
 Set ARDUINO_PICO_DIR when the framework is installed outside the default
-~/.platformio/packages/framework-arduinopico directory. Tests use fake hardware and the bundled BTstack source. AddressSanitizer and UndefinedBehaviorSanitizer errors
+~/.platformio/packages/framework-arduinopico directory. Tests use the actual
+BTstack declarations and event accessors with fake hardware, filesystem, and
+radio implementations. AddressSanitizer and UndefinedBehaviorSanitizer errors
 fail the run. CI runs these tests after building both firmware targets.
 
 Coverage includes:
@@ -15,5 +17,9 @@ Coverage includes:
 - packet lengths, all fixed-field masks, duplicate/stale sequences, rollover,
   arbitrary initial sequences, watchdog resets, and control timing echoes;
 - degree-to-servo round trips and analog/encoder boundary values;
+- L2CAP retained SDU buffers, coalescing, inline/deferred callbacks, request
+  errors, pending channel reservations, queue overflow, and foreign peers;
+- GATT fallback with a credit-starved L2CAP channel still open, switching back
+  to L2CAP, and delayed callbacks from the previously selected transport;
 - the actual bundled BTstack allocator with the project patch: 1,024 LE channel
   allocations, wraparound at 0x007f, occupied channels, and Classic/LE interleaving.

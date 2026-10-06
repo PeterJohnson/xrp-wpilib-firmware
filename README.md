@@ -146,3 +146,17 @@ Encoder period uses a fixed denominator of `1000000`; `periodNumerator >> 1` is 
 The XRP status `ctrl` byte is a copy of the most recent accepted control packet `ctrl` byte. The timing field's `lastControlSeq` echoes the most recent accepted motor/servo/DIO control packet sequence number, and `controlRxAge10Us * 10` is the number of microseconds between receiving that control packet and producing the status packet. A `controlRxAge10Us` value of `0xffff` indicates no control packet has been accepted yet or the age exceeded the representable range. Clients can use this echo with their local control-packet send timestamps to estimate application-level round-trip latency.
 
 Control sequences use 16-bit modular ordering, accepting forward distances of 1-32767 and ignoring duplicates or stale packets. Watchdog expiry resets control state, so the next session may start at any sequence number.
+
+
+## Bluetooth Packet Transport
+
+The Bluetooth transport module supports two packet transports:
+
+* GATT service UUID: `7d2ea28a-f7bd-485d-9d6a-2c3f0b214a3f`
+  * Control characteristic UUID: `7d2ea28b-f7bd-485d-9d6a-2c3f0b214a3f`
+  * Control property: `WRITE_WITHOUT_RESPONSE`
+  * Status characteristic UUID: `7d2ea28c-f7bd-485d-9d6a-2c3f0b214a3f`
+  * Status property: `NOTIFY`
+* LE L2CAP Credit-Based Mode PSM: `0x0081`
+
+Each GATT write value, GATT notification value, or L2CAP SDU contains exactly one WPILib XRP protocol packet. There is no additional length prefix inside the Bluetooth payload.

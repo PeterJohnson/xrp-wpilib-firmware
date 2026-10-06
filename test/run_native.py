@@ -30,11 +30,17 @@ suites = {
         "src/byteutils.cpp",
         "src/watchdog.cpp",
         "src/XRPServo.cpp"
+    ],
+    "transport": [
+        "src/bluetooth_transport.cpp"
     ]
 }
 with tempfile.TemporaryDirectory(prefix="xrp-native-tests-") as build_dir:
     for suite, sources in suites.items():
         extra_flags = []
+        if suite == "transport":
+            extra_flags = ["-DENABLE_BLE", "-isystem", str(btstack),
+                           "-isystem", str(framework / "include/rp2040")]
         executable = str(Path(build_dir) / suite)
         command = compiler + flags + extra_flags + [
             str(root / ("test/native/" + suite + "_test.cpp")),
