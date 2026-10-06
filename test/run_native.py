@@ -31,8 +31,16 @@ suites = {
         "src/watchdog.cpp",
         "src/XRPServo.cpp"
     ],
+    "config": [
+        "src/config.cpp"
+    ],
     "transport": [
-        "src/bluetooth_transport.cpp"
+        "src/bluetooth_transport.cpp",
+        "src/main.cpp",
+        "src/config.cpp",
+        "src/wpilib_protocol.cpp",
+        "src/byteutils.cpp",
+        "src/watchdog.cpp"
     ]
 }
 with tempfile.TemporaryDirectory(prefix="xrp-native-tests-") as build_dir:

@@ -8,7 +8,7 @@
 #include <map>
 #include <vector>
 
-#define MIN_UPDATE_TIME_MS 50
+#define MIN_UPDATE_TIME_MS 20
 
 namespace xrp {
 

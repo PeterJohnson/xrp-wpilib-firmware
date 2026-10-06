@@ -3,9 +3,25 @@
 #include "Arduino.h"
 #include "BluetoothLock.h"
 #include "bluetooth_transport.h"
+#include "byteutils.h"
+#include "config.h"
 #include "debug_log.h"
+#include "imu.h"
+#include "LittleFS.h"
+#include "robot.h"
+#include "wpilib_protocol.h"
 #include "tusb.h"
 
+void loop();
+void sendData();
+void updateStatusFile();
+extern char DEFAULT_BLUETOOTH_NAME_SUFFIX[20];
+extern char CHIP_ID[20];
+extern char BLUETOOTH_DEVICE_NAME[32];
+extern "C" const unsigned char* GetResource_VERSION(size_t* len) {
+  *len = 4;
+  return reinterpret_cast<const unsigned char*>("test");
+}
 extern "C" {
 #include "ble/att_db_util.h"
 #include "ble/att_server.h"
@@ -70,6 +86,14 @@ void completeGattRequest() {
   BluetoothLock lock;
   callback->callback(callback->context);
 }
+void connectLe() {
+  std::vector<uint8_t> event(21);
+  event[0] = HCI_EVENT_LE_META;
+  event[2] = HCI_SUBEVENT_LE_CONNECTION_COMPLETE;
+  little_endian_store_16(event.data(), 4, connection);
+  little_endian_store_16(event.data(), 14, 6);
+  emit(hciHandler, event);
+}
 void connectGatt(uint16_t handle = connection) {
   std::vector<uint8_t> event(11);
   event[0] = ATT_EVENT_CONNECTED;
@@ -123,6 +147,9 @@ void receive(std::initializer_list<uint8_t> bytes) {
   std::vector<uint8_t> value(bytes);
   BluetoothLock lock;
   channelHandler(L2CAP_DATA_PACKET, cid, value.data(), value.size());
+}
+void control(uint16_t seq, uint8_t ctrl = 1) {
+  receive({static_cast<uint8_t>(seq >> 8), static_cast<uint8_t>(seq), ctrl, 0, 0});
 }
 }  // namespace
 
@@ -263,6 +290,13 @@ char* bd_addr_to_str(const bd_addr_t) {
 int main() {
   using namespace bluetooth_transport;
 
+  std::strcpy(CHIP_ID, "AAAA-BBBB");
+  std::strcpy(BLUETOOTH_DEVICE_NAME, "WPIXRP-Bot");
+  updateStatusFile();
+  const auto identification = LittleFS.files.at("/status.txt");
+  assert(identification.find("Bluetooth Name: WPIXRP-Bot\n") != std::string::npos);
+  auto writes = LittleFS.writeOpens;
+
   begin("WPIXRP-1234567890123456789");
   const auto ad = advertisementDiagnostics();
   assert(ad.advertisingDataLength == 31 && !ad.advertisingDataOverflow);
@@ -271,6 +305,12 @@ int main() {
                      26) == 0);
   assert(ad.scanResponseData[2] == 0x3f && ad.scanResponseData[17] == 0x7d);
   assert(!connected());
+  // Runtime diagnostics must not write to the filesystem.
+  for (int i = 0; i < 3; ++i) {
+    testMicros += 11000000;
+    loop();
+    assert(LittleFS.writeOpens == writes);
+  }
   connectGatt();
   assert(connected());
   const auto handles = connectionDiagnostics();
@@ -459,5 +499,113 @@ int main() {
   assert(sentGatt.back() ==
          std::vector<uint8_t>({'G', 'A', 'T', 'T', ' ', 'f', 'a', 'l', 'l', 'b',
                                'a', 'c', 'k'}));
-  std::puts("Bluetooth transport tests passed");
+  // Exercise the real firmware loop through rapid L2CAP reconnects, with
+  // reused handles/CIDs and without waiting for the 500 ms watchdog timeout.
+  // Alternate LE-before-ATT and ATT-before-LE event ordering.
+  for (uint16_t oldSeq : {100, 40000, 65535}) {
+    disconnect();
+    connectLe();
+    connectGatt();
+    incomingL2cap();
+    openL2cap();
+    control(oldSeq);
+    loop();
+    assert(xrp::testRobotEnabled && wpilib_protocol::dsWatchdogActive());
+    auto oldSession = connectionSession();
+    control(static_cast<uint16_t>(oldSeq + 1));  // Still queued at disconnect.
+    assert(sendPacket("in flight", 9));
+    assert(sendPacket("pending", 7));
+    disconnect();
+    connectGatt();
+    connectLe();
+    incomingL2cap();
+    openL2cap();
+    assert(connectionSession() != oldSession);
+    assert(!connectionDiagnostics().txPending);
+    assert(!readPacket(rx, sizeof(rx), &size));
+    control(0, 0);
+    loop();
+    assert(!xrp::testRobotEnabled && wpilib_protocol::dsWatchdogActive());
+    control(1);
+    loop();
+    assert(xrp::testRobotEnabled);
+    sendData();
+    completeL2cap();
+    assert(sentL2cap.back()[2] == 1);
+    disconnect();
+    loop();
+    assert(!xrp::testRobotEnabled && !wpilib_protocol::dsWatchdogActive());
+  }
+
+  connectLe();
+  incomingL2cap();
+  openL2cap();
+  control(100);
+  loop();
+  assert(xrp::testRobotEnabled);
+  assert(write(cccHandle, {1, 0}) == 0);
+  auto channelSession = connectionSession();
+  control(101);  // Must be flushed when just the L2CAP channel closes.
+  emit(channelHandler, {L2CAP_EVENT_CHANNEL_CLOSED, 0, cid, 0});
+  incomingL2cap();
+  openL2cap();
+  assert(connectionSession() != channelSession);
+  control(0, 0);
+  loop();
+  assert(!xrp::testRobotEnabled && wpilib_protocol::dsWatchdogActive());
+
+  // A stalled USB reader and a full log queue cannot prevent motor commands
+  // from being processed or prevent the watchdog from disabling outputs.
+  testUsbConnected = true;
+  testUsbSpace = 0;
+  for (size_t i = 0; i < debug_log::QUEUE_CAPACITY; ++i) {
+    debug_log::print("x");
+  }
+  auto droppedLogs = debug_log::counters().dropped;
+  debug_log::println("stalled reader");
+  assert(debug_log::counters().dropped == droppedLogs + 1);
+  auto usbWrites = testUsbWrites;
+  receive({0, 1, 1, 0, 1, 0, 127});  // Enable and set motor 0 to 127.
+  loop();
+  assert(xrp::testRobotEnabled && xrp::testPwm[0] == 127.0 / 255.0);
+  assert(wpilib_protocol::dsWatchdogActive());
+  assert(testUsbWrites == usbWrites);
+  testMicros += 600000;
+  loop();
+  assert(!xrp::testRobotEnabled && !xrp::testImuEnabled);
+  assert(!wpilib_protocol::dsWatchdogActive() && testUsbWrites == usbWrites);
+
+  // USB drain happens after watchdog shutdown, even when the sink recovers.
+  testUsbSpace = 256;
+  testDuringUsbWrite = [] {
+    assert(!xrp::testRobotEnabled && !xrp::testImuEnabled);
+  };
+  loop();
+  testDuringUsbWrite = nullptr;
+  assert(testUsbWrites == usbWrites + 1);
+  testUsbConnected = false;
+
+  // Test the status encoder path in main.cpp, including signed wrap and the
+  // invalid period sentinel before left-encoder direction reversal.
+  xrp::testEncoderCount = INT32_MIN;
+  sendData();
+  completeL2cap();
+  auto* status = reinterpret_cast<char*>(sentL2cap.back().data());
+  assert(networkToInt32(status, 5) == INT32_MIN);
+  assert(networkToUInt32(status, 9) == UINT32_MAX);
+  assert(sentL2cap.back().size() == 79);
+  assert(LittleFS.writeOpens == writes);
+
+  // All sensors fit in one packet, with timing after the analog values.
+  xrp::testReflectanceInitialized = true;
+  xrp::testRangefinderInitialized = true;
+  sendData();
+  completeL2cap();
+  status = reinterpret_cast<char*>(sentL2cap.back().data());
+  assert(sentL2cap.back().size() == 85);
+  assert(networkToUInt16(status, 3) == 0x0bff);
+  assert(networkToUInt16(status, 81) == 0);
+  assert(networkToUInt16(status, 83) == wpilib_protocol::INVALID_CONTROL_RX_AGE_10_US);
+
+  std::puts("transport and firmware loop tests passed");
 }
