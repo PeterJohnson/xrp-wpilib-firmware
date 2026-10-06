@@ -37,12 +37,22 @@ For ideal use, the XRP should be placed on a flat surface prior to power up, and
 
 The configured Bluetooth name should appear in your operating system's Bluetooth pairing UI. Windows clients should use the custom GATT service. Linux and macOS clients may use either GATT or the LE L2CAP channel on PSM `0x0081`.
 
-The Bluetooth name can also be found by connecting the XRP to a computer, navigating to the PICODISK removable drive and opening the `XRP-Status.txt` file. This file contains the firmware version, chip ID, Bluetooth name, and configuration information. It is written at startup. Connection events are available over USB Serial at 115200 baud.
+The Bluetooth name can also be found by connecting the XRP to a computer, navigating to the PICODISK removable drive and opening the `XRP-Status.txt` file. This file contains the firmware version, chip ID, Bluetooth name, and configuration information. It is checked at startup and rewritten only when its contents change. Live Bluetooth diagnostics are available over USB Serial at 115200 baud.
 
 ### Serial Diagnostics
 
-USB Serial reports loop timing and connection state every five seconds, plus
-connection, enable/disable, and error events. Output uses the nonblocking logger.
+USB Serial reports a connection/queue summary every five seconds, IMU timing
+about every four seconds, and connection, enable/disable, and error events.
+Control and status packets are counted without logging each packet.
+
+Logs use a fixed 4 KiB RAM queue. The main loop drains at most 64 bytes per
+iteration after control and watchdog processing, using only available USB space.
+A busy USB interface or stalled reader does not make the logger wait. Messages
+are dropped when the queue is full or in use, and messages longer than 767 bytes
+are truncated. Repeated transport-send and encoder-overrun errors are limited
+to one message per category per second. The five-second summary includes
+`log_drop`, `log_supp`, and `log_trunc` counters for dropped, rate-limited, and
+truncated messages. Logging does not write to flash.
 
 ### XRP Configuration
 The firmware stores its persistent configuration in `/config.ini` on LittleFS. It is a plain text INI file so it can be edited by hand in a text editor. If the file is missing, invalid, or uses an older schema version, the firmware rewrites it with the default Bluetooth configuration template on boot.

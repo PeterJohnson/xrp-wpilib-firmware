@@ -48,6 +48,7 @@ uint32_t _lastCommandAckVersion = 0;
 uint16_t seq = 0;
 
 // Called only during setup, before Bluetooth and the USB status drive start.
+// Write only when identification changes to limit flash wear.
 void updateStatusFile() {
   size_t versionLength = 0;
   const auto* version = GetResource_VERSION(&versionLength);
@@ -64,6 +65,19 @@ void updateStatusFile() {
   contents += "\nConfig File: ";
   contents += XRP_CONFIG_PATH;
   contents += "\nTransport: Bluetooth LE GATT + L2CAP Credit-Based Mode\n";
+  contents += "\nLive diagnostics: USB Serial at 115200 baud.\n";
+
+  File existing = LittleFS.open("/status.txt", "r");
+  size_t matched = 0;
+  while (existing && matched < contents.size() && existing.available() &&
+         existing.read() == static_cast<unsigned char>(contents[matched])) {
+    matched++;
+  }
+  bool unchanged = existing && matched == contents.size() && !existing.available();
+  existing.close();
+  if (unchanged) {
+    return;
+  }
 
   File file = LittleFS.open("/status.txt", "w");
   if (!file) {
@@ -243,16 +257,61 @@ void sendData() {
 
 void checkPrintStatus() {
   if (millis() - _lastMessageStatusPrint > 5000) {
-
     int usedHeap = rp2040.getUsedHeap();
+    const auto& btDiag = bluetooth_transport::connectionDiagnostics();
     const auto logCounts = debug_log::counters();
-    debug_log::log("t(ms):%lu h:%d bt:%d lt(us):%lu "
-                   "log_drop:%lu log_supp:%lu log_trunc:%lu\n",
-                   static_cast<unsigned long>(millis()), usedHeap,
-                   bluetooth_transport::connected() ? 1 : 0, _avgLoopTimeUs,
-                   static_cast<unsigned long>(logCounts.dropped),
-                   static_cast<unsigned long>(logCounts.suppressed),
-                   static_cast<unsigned long>(logCounts.truncated));
+    debug_log::log("t(ms):%lu h:%d bt:%d lt(us):%lu gatt:%d notify:%d "
+                  "mtu:%u size:%u ctrl:%lu cccd:%lu q:%lu bN:%lu bM:%lu "
+                  "req:%lu cb:%lu imm:%lu sent:%lu drop:%lu rx:%u/%u "
+                  "rxmax:%u rxdrop:%lu l2q:%lu l2i:%lu l2s:%lu l2d:%lu "
+                  "rej:%lu/%lu/%lu last:%02x/%02x/%02x "
+                  "active:%u tx:%u pending:%d requested:%d pending_us:%lu "
+                  "l2cid:%04x credits:%u log_drop:%lu log_supp:%lu log_trunc:%lu\n",
+                  static_cast<unsigned long>(millis()),
+                  usedHeap,
+                  bluetooth_transport::connected() ? 1 : 0,
+                  _avgLoopTimeUs,
+                  btDiag.gattConnected ? 1 : 0,
+                  btDiag.gattNotificationsEnabled ? 1 : 0,
+                  btDiag.gattPayloadMtu,
+                  btDiag.lastGattStatusPacketSize,
+                  static_cast<unsigned long>(btDiag.gattControlPacketsReceived),
+                  static_cast<unsigned long>(btDiag.gattCccdWrites),
+                  static_cast<unsigned long>(btDiag.gattStatusPacketsQueued),
+                  static_cast<unsigned long>(
+                      btDiag.gattStatusPacketsBlockedNotifications),
+                  static_cast<unsigned long>(
+                      btDiag.gattStatusPacketsBlockedMtu),
+                  static_cast<unsigned long>(btDiag.gattNotificationRequests),
+                  static_cast<unsigned long>(btDiag.gattNotificationCallbacks),
+                  static_cast<unsigned long>(
+                      btDiag.gattNotificationImmediateSends),
+                  static_cast<unsigned long>(btDiag.gattNotificationsSent),
+                  static_cast<unsigned long>(btDiag.gattNotificationDrops),
+                  btDiag.rxQueueUsed,
+                  btDiag.rxQueueDepth,
+                  btDiag.rxQueueMaxUsed,
+                  static_cast<unsigned long>(btDiag.rxPacketsDropped),
+                  static_cast<unsigned long>(btDiag.l2capStatusPacketsQueued),
+                  static_cast<unsigned long>(btDiag.l2capImmediateSends),
+                  static_cast<unsigned long>(btDiag.l2capPacketsSent),
+                  static_cast<unsigned long>(btDiag.l2capSendDrops),
+                  static_cast<unsigned long>(btDiag.rejectedLeConnections),
+                  static_cast<unsigned long>(btDiag.rejectedGattConnections),
+                  static_cast<unsigned long>(btDiag.rejectedL2capConnections),
+                  btDiag.lastL2capSendResult,
+                  btDiag.lastGattNotifyRequestResult,
+                  btDiag.lastGattNotifyResult,
+                  btDiag.activeTransport,
+                  btDiag.txTransport,
+                  btDiag.txPending ? 1 : 0,
+                  btDiag.txCanSendRequested ? 1 : 0,
+                  static_cast<unsigned long>(btDiag.txPendingAgeUs),
+                  btDiag.l2capChannelId,
+                  btDiag.l2capPeerCredits,
+                  static_cast<unsigned long>(logCounts.dropped),
+                  static_cast<unsigned long>(logCounts.suppressed),
+                  static_cast<unsigned long>(logCounts.truncated));
     _lastMessageStatusPrint = millis();
   }
 }

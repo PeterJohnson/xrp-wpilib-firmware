@@ -304,12 +304,40 @@ char* bd_addr_to_str(const bd_addr_t) {
 int main() {
   using namespace bluetooth_transport;
 
+  // Identification is refreshed at boot only when the saved contents change.
   std::strcpy(CHIP_ID, "AAAA-BBBB");
   std::strcpy(BLUETOOTH_DEVICE_NAME, "WPIXRP-Bot");
   updateStatusFile();
+  assert(LittleFS.writeOpens == 1);
   const auto identification = LittleFS.files.at("/status.txt");
-  assert(identification.find("Bluetooth Name: WPIXRP-Bot\n") != std::string::npos);
+  assert(identification.find("Version: test\n") != std::string::npos);
+  assert(identification.find("Chip ID: AAAA-BBBB\n") != std::string::npos);
+  assert(identification.find("Bluetooth Name: WPIXRP-Bot\n") !=
+         std::string::npos);
+  assert(identification.find("USB Serial at 115200 baud") != std::string::npos);
+  assert(identification.find("Uptime") == std::string::npos);
+  assert(identification.find("Packet Counters") == std::string::npos);
   auto writes = LittleFS.writeOpens;
+  updateStatusFile();
+  assert(LittleFS.writeOpens == writes);
+
+  // Replace files with extra data, truncated contents, or a different version.
+  auto oldVersion = identification;
+  oldVersion.replace(oldVersion.find("test"), 4, "old!");
+  for (const auto& stale : {identification + "extra data\n",
+                            identification.substr(0, 20), oldVersion}) {
+    LittleFS.files["/status.txt"] = stale;
+    updateStatusFile();
+    assert(LittleFS.writeOpens == ++writes);
+    assert(LittleFS.files.at("/status.txt") == identification);
+  }
+  std::strcpy(BLUETOOTH_DEVICE_NAME, "WPIXRP-Renamed");
+  updateStatusFile();
+  assert(LittleFS.writeOpens == ++writes);
+  assert(LittleFS.files.at("/status.txt").find("WPIXRP-Renamed\n") !=
+         std::string::npos);
+  updateStatusFile();
+  assert(LittleFS.writeOpens == writes);
 
   begin("WPIXRP-1234567890123456789");
   const auto ad = advertisementDiagnostics();
@@ -472,7 +500,7 @@ int main() {
 
   for (unsigned i = 0; i < 20; ++i) receive({static_cast<uint8_t>(i)});
   auto full = connectionDiagnostics();
-  assert(full.rxQueueUsed == full.rxQueueDepth);
+  assert(full.rxQueueUsed == full.rxQueueDepth && full.rxPacketsDropped == 5);
   for (unsigned i = 0; i < full.rxQueueDepth; ++i) {
     assert(readPacket(rx, sizeof(rx), &size) && size == 1 &&
            static_cast<unsigned char>(rx[0]) == i);
